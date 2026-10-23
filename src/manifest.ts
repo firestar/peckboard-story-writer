@@ -7,6 +7,7 @@
 // a manifest that self-reports an old version makes the registry's
 // "upgrade available" chip permanent.
 import { version as VERSION } from "../package.json";
+import { SCHEMAS } from "./schemas";
 
 const REPOSITORY = "https://github.com/firestar/peckboard-story-writer";
 
@@ -21,8 +22,8 @@ const DESCRIPTION =
   "stage's cards, worker status, per-chapter progress, character sheets, the " +
   "per-chapter emotion/attitude matrix, who-knows-what, setup/payoff tracking, the " +
   "choices map, a glossary, and chapter recaps. Feedback on the pilot or any chapter " +
-  "becomes a revision card and is appended to the story's style rules. Worker sessions " +
-  "pull context and push results through story_get_brief, story_get_records, " +
+  "becomes a revision card and can be appended to the story's style rules. Worker " +
+  "sessions pull context and push results through story_get_brief, story_get_records, " +
   "story_submit_records, story_submit_chapter, story_update_state and " +
   "story_report_review; the writer and reviewer models are configurable below.";
 
@@ -32,19 +33,6 @@ const ICON =
   'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
   '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>' +
   '<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
-
-const EMPTY_SCHEMA = { type: "object", properties: {}, additionalProperties: false };
-
-const REVIEW_PASSES = [
-  "structure",
-  "character",
-  "pacing",
-  "line",
-  "copyedit",
-  "ai-tell",
-  "echo-word",
-  "sentence-shape",
-];
 
 export function manifestJson(): string {
   const manifest = {
@@ -112,7 +100,9 @@ export function manifestJson(): string {
     // story_get_* tools and push results through story_submit_* /
     // story_update_state / story_report_review; the plugin stores everything
     // (data_store) and mirrors chapter/record files into story/ under the
-    // project (project_files_write).
+    // project (project_files_write). Every input_schema here is the exact
+    // schema src/tools.ts validates calls against (src/schemas.ts) — the
+    // declared and enforced contracts cannot drift apart.
     mcp_tools: [
       {
         name: "story_get_brief",
@@ -120,41 +110,32 @@ export function manifestJson(): string {
           "Get this story's brief: the setup-wizard answers (title, genre, format, chapter " +
           "count, POV/tense, tone, audience/rating, premise, plot outline, setting/world, " +
           "characters, relationships, themes, endings/routes/choices, style rules, banned " +
-          "words), the compiled writing-lessons prompt pack, and any owner feedback recorded " +
-          "so far. Call this first in any story-writing or reviewing turn.",
-        input_schema: EMPTY_SCHEMA,
+          "words), and any owner/review feedback recorded so far. Call this first in any " +
+          "story-writing or reviewing turn.",
+        input_schema: SCHEMAS.story_get_brief,
         worker_allowed: true,
       },
       {
         name: "story_get_records",
         description:
-          "Get the story's living records: character sheets, per-chapter state, the " +
-          "per-chapter emotion/attitude matrix, who-knows-what per route, the setup/payoff " +
-          "list (promise -> progress -> payoff), the glossary, and prior chapter recaps. " +
-          "Call before drafting or reviewing a chapter so reactions only come from " +
-          "characters who could know.",
-        input_schema: EMPTY_SCHEMA,
+          "Get the story's living records: character sheets, relationships, who-knows-what " +
+          "per route, choices, the setup/payoff list (promise -> progress -> payoff), the " +
+          "glossary, per-chapter state (the emotion/attitude matrix), scene-fact sheets, and " +
+          "prior chapter recaps. Call before drafting or reviewing a chapter so reactions only " +
+          "come from characters who could know. Optionally limit to some sections and/or cap " +
+          "chapter-indexed sections to a given chapter.",
+        input_schema: SCHEMAS.story_get_records,
         worker_allowed: true,
       },
       {
         name: "story_submit_records",
         description:
           "Save updated story records after drafting or reviewing a chapter: character " +
-          "sheets, per-chapter state, who-knows-what, setup/payoff progress, glossary, or " +
-          "chapter recaps. Pass only the sections that changed; existing sections are kept.",
-        input_schema: {
-          type: "object",
-          properties: {
-            records: {
-              type: "object",
-              description:
-                "Partial records update, keyed by section (e.g. 'characters', " +
-                "'chapter_state', 'who_knows_what', 'setup_payoff', 'glossary', 'recaps').",
-            },
-          },
-          required: ["records"],
-          additionalProperties: false,
-        },
+          "sheets, relationships, who-knows-what, choices, setup/payoff progress, glossary, " +
+          "per-chapter state, scene sheets, or recaps. Pass only the sections that changed; " +
+          "items are upsert-merged by identity (id, or term/chapter for glossary/chapter_state/" +
+          "recaps) so untouched items and fields are kept.",
+        input_schema: SCHEMAS.story_submit_records,
         worker_allowed: true,
       },
       {
@@ -162,39 +143,19 @@ export function manifestJson(): string {
         description:
           "Submit a chapter's full text (pilot or any later chapter). Stored and mirrored to " +
           "story/chapters/ in the project repo. Include a short recap for the next chapter's " +
-          "context and any state updates (who-knows-what, setup/payoff) the chapter caused.",
-        input_schema: {
-          type: "object",
-          properties: {
-            chapter: { type: "integer", description: "Chapter number (0 = pilot)." },
-            markdown: { type: "string", description: "The complete chapter text." },
-            recap: { type: "string", description: "Short recap of this chapter for later context." },
-            state_updates: {
-              type: "object",
-              description: "Optional partial records update this chapter causes (same shape as story_submit_records).",
-            },
-          },
-          required: ["chapter", "markdown"],
-          additionalProperties: false,
-        },
+          "context and any records update (who-knows-what, setup/payoff, scene sheets) the " +
+          "chapter caused.",
+        input_schema: SCHEMAS.story_submit_chapter,
         worker_allowed: true,
       },
       {
         name: "story_update_state",
         description:
-          "Report pipeline progress: the current stage, a short status note for the dashboard, " +
-          "and any structured data for the stage (e.g. which chapters are ready). Does not " +
-          "advance cards by itself — card.step.after / timer.tick drive the stage machine.",
-        input_schema: {
-          type: "object",
-          properties: {
-            stage: { type: "string", description: "Pipeline stage id, e.g. 'pilot', 'chapters', 'review', 'final'." },
-            note: { type: "string", description: "Short status note shown on the dashboard." },
-            data: { type: "object", description: "Stage-specific structured data." },
-          },
-          required: [],
-          additionalProperties: false,
-        },
+          "Report pipeline progress: the current stage, its status, a short status note for " +
+          "the dashboard, and any structured data for the stage (e.g. which chapters are " +
+          "ready). Does not advance cards by itself — card.step.after / timer.tick drive the " +
+          "stage machine.",
+        input_schema: SCHEMAS.story_update_state,
         worker_allowed: true,
       },
       {
@@ -202,18 +163,9 @@ export function manifestJson(): string {
         description:
           "Report the result of one review pass on one chapter (structure, character, " +
           "pacing, line, copyedit, ai-tell, echo-word, or sentence-shape). A 'changes_requested' " +
-          "verdict's notes are appended to the story's style rules as owner/review feedback.",
-        input_schema: {
-          type: "object",
-          properties: {
-            chapter: { type: "integer", description: "Chapter number this review pass covers." },
-            pass: { type: "string", enum: REVIEW_PASSES, description: "Which review pass this is." },
-            verdict: { type: "string", enum: ["pass", "changes_requested"] },
-            notes: { type: "string", description: "Findings / requested changes, or a brief pass note." },
-          },
-          required: ["chapter", "pass", "verdict", "notes"],
-          additionalProperties: false,
-        },
+          "verdict's notes are recorded as feedback; an optional 'rule' is additionally " +
+          "appended to the story's style rules as a durable owner/review decision.",
+        input_schema: SCHEMAS.story_report_review,
         worker_allowed: true,
       },
     ],

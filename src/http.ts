@@ -8,7 +8,9 @@
 
 import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
-import { listModels, requireProjectId, storeGet, storePut } from "./host";
+import { listModels, requireProjectId } from "./host";
+import { getAllRecords, getBrief, getFeedback, getPipelineState, listChapters, listReviews, putBrief } from "./docs";
+import { Brief } from "./types";
 
 const PAGE_PATH = "/plugin-api/v1/story-writer";
 const API = "/api/plugin-ui/story-writer";
@@ -61,11 +63,24 @@ export function serveAuthed(payload: any): string {
 
 function getState(): any {
   const projectId = requireProjectId();
+  // Chapter/review bodies can be large; the dashboard only needs a summary
+  // per chapter (full text is fetched separately when a chapter is opened —
+  // a later card's concern).
+  const chapters = listChapters(projectId).map((c) => ({
+    chapter: c.chapter,
+    revision: c.revision,
+    recap: c.recap,
+    length: c.markdown.length,
+    submitted_at: c.submitted_at,
+  }));
   return {
     project_id: projectId,
-    brief: storeGet("brief", projectId),
-    records: storeGet("records", projectId) ?? {},
-    pipeline: storeGet("state", projectId) ?? { stage: "setup" },
+    brief: getBrief(projectId),
+    records: getAllRecords(projectId),
+    pipeline: getPipelineState(projectId),
+    chapters,
+    reviews: listReviews(projectId),
+    feedback: getFeedback(projectId),
   };
 }
 
@@ -75,6 +90,6 @@ function saveWizard(body: any): any {
   if (!brief || typeof brief !== "object" || Array.isArray(brief)) {
     throw new Error("brief (object) is required");
   }
-  storePut("brief", projectId, brief);
+  putBrief(projectId, brief as Brief);
   return { ok: true };
 }

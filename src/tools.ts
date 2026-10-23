@@ -1,109 +1,202 @@
 // The six worker-facing MCP tools (story_get_brief, story_get_records,
 // story_submit_records, story_submit_chapter, story_update_state,
 // story_report_review). Each is scoped to the calling project
-// (`requireProjectId`) and backed by the plugin document store; chapter text
-// is additionally mirrored into the project repo under story/ so it survives
-// outside the plugin's own storage.
-//
-// These are deliberately thin for the scaffold: they validate input, persist
-// it, and read it back verbatim. The pipeline (card creation/advancement,
-// style-rule compilation, the writing-lessons prompt pack) is built on top of
-// this storage in later cards.
+// (`requireProjectId`), validates its input against src/schemas.ts (the same
+// schemas the manifest declares), persists through the typed doc store
+// (src/docs.ts), and mirrors the human-readable result into the project
+// repo under story/ (src/files.ts, project_files_write — only allowed during
+// this tool invocation).
 
-import { requireProjectId, storeGet, storePut, writeFile } from "./host";
+import { requireProjectId } from "./host";
+import { validate } from "./validate";
+import { SCHEMAS } from "./schemas";
+import {
+  addFeedback,
+  applyRecordsUpdate,
+  getAllRecords,
+  getBrief,
+  getChapter,
+  getFeedback,
+  getPipelineState,
+  getRecordSection,
+  getReview,
+  putBrief,
+  putChapter,
+  putPipelineState,
+  putRecordSection,
+  putReview,
+  upsertSection,
+} from "./docs";
+import { chapterFileName, writeBrief, writeChapter, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
+import { Brief, ChapterDoc, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, nowIso } from "./types";
 
-function asRecord(v: unknown): Record<string, unknown> {
-  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+/// Validate a partial records update (section -> item[]): every key must be
+/// a known RECORD_SECTION and every value an array. Item shapes inside are
+/// deliberately not enforced here — writers/reviewers attach whatever
+/// fields make sense and the upsert-merge keeps the rest of each item intact.
+function validateRecordsUpdate(records: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(records)) {
+    if (!(RECORD_SECTIONS as readonly string[]).includes(key)) {
+      throw new Error(`records.${key}: unknown section (expected one of ${RECORD_SECTIONS.join(", ")})`);
+    }
+    if (!Array.isArray(value)) {
+      throw new Error(`records.${key}: must be an array`);
+    }
+  }
 }
 
-/// Get this story's brief (setup-wizard answers + compiled prompt pack +
-/// owner feedback). `null` brief means the wizard hasn't been run yet.
-export function toolGetBrief(_args: any, _context: any): any {
+function mirrorChangedSections(projectId: string, sections: RecordSection[]): void {
+  for (const section of sections) {
+    writeRecordSection(section, getRecordSection(projectId, section));
+    if (section === "recaps") {
+      writeRecaps(getRecordSection<Recap>(projectId, "recaps"));
+    }
+  }
+}
+
+/// Get this story's brief (setup-wizard answers) plus any feedback recorded
+/// so far. `null` brief means the wizard hasn't been run yet.
+export function toolGetBrief(args: any, _context: any): any {
+  validate(SCHEMAS.story_get_brief, args ?? {});
   const projectId = requireProjectId();
-  return { brief: storeGet("brief", projectId) };
+  return { brief: getBrief(projectId), feedback: getFeedback(projectId) };
 }
 
-/// Get the story's living records (character sheets, per-chapter state,
-/// who-knows-what, setup/payoff, glossary, recaps).
-export function toolGetRecords(_args: any, _context: any): any {
+/// Get the story's living records (character sheets, relationships,
+/// who-knows-what, choices, setup/payoff, glossary, per-chapter state,
+/// scene sheets, recaps), optionally limited to some sections and/or capped
+/// to chapter-indexed sections up to a given chapter.
+export function toolGetRecords(args: any, _context: any): any {
+  validate(SCHEMAS.story_get_records, args ?? {});
   const projectId = requireProjectId();
-  return { records: asRecord(storeGet("records", projectId)) };
+  const wanted: readonly string[] =
+    Array.isArray(args?.sections) && args.sections.length > 0 ? args.sections : RECORD_SECTIONS;
+  const chapterCap: number | null = typeof args?.chapter === "number" ? args.chapter : null;
+
+  const records: Record<string, unknown[]> = {};
+  for (const section of RECORD_SECTIONS) {
+    if (!wanted.includes(section)) continue;
+    let items = getRecordSection(projectId, section);
+    if (chapterCap !== null && (section === "chapter_state" || section === "recaps")) {
+      items = items.filter((item: any) => typeof item?.chapter === "number" && item.chapter <= chapterCap);
+    }
+    records[section] = items;
+  }
+  return { records };
 }
 
-/// Merge a partial records update into the stored records doc.
+/// Upsert-merge a partial records update into storage and mirror the
+/// touched sections into story/records/.
 export function toolSubmitRecords(args: any, _context: any): any {
+  validate(SCHEMAS.story_submit_records, args);
+  validateRecordsUpdate(args.records);
   const projectId = requireProjectId();
-  const records = args?.records;
-  if (!records || typeof records !== "object" || Array.isArray(records)) {
-    throw new Error("records (object) is required");
-  }
-  const merged = { ...asRecord(storeGet("records", projectId)), ...records };
-  storePut("records", projectId, merged);
-  return { ok: true };
+  const changed = applyRecordsUpdate(projectId, args.records);
+  mirrorChangedSections(projectId, changed);
+  return { ok: true, sections: changed };
 }
 
-/// Store a chapter's text (and optional recap / records update), and mirror
-/// the chapter into story/chapters/ in the project repo.
-export function toolSubmitChapter(args: any, context: any): any {
+/// Store a chapter's text (and optional recap / records update), bumping its
+/// revision, and mirror it into story/chapters/.
+export function toolSubmitChapter(args: any, _context: any): any {
+  validate(SCHEMAS.story_submit_chapter, args);
   const projectId = requireProjectId();
-  const chapter = args?.chapter;
-  const markdown = args?.markdown;
-  if (typeof chapter !== "number" || !Number.isInteger(chapter) || chapter < 0) {
-    throw new Error("chapter (non-negative integer; 0 = pilot) is required");
-  }
-  if (typeof markdown !== "string" || markdown.trim().length === 0) {
-    throw new Error("markdown is required");
-  }
-  const key = `${projectId}:${chapter}`;
-  const recap = typeof args?.recap === "string" ? args.recap : null;
-  storePut("chapters", key, { chapter, markdown, recap });
-  writeFile(`story/chapters/chapter-${String(chapter).padStart(2, "0")}.md`, markdown);
+  const chapter: number = args.chapter;
+  const markdown: string = args.markdown;
+  const recap: string | null = typeof args.recap === "string" ? args.recap : null;
 
-  const stateUpdates = args?.state_updates;
-  if (stateUpdates && typeof stateUpdates === "object" && !Array.isArray(stateUpdates)) {
-    const merged = { ...asRecord(storeGet("records", projectId)), ...stateUpdates };
-    storePut("records", projectId, merged);
-  }
-  return { ok: true, path: `story/chapters/chapter-${String(chapter).padStart(2, "0")}.md` };
-}
-
-/// Report pipeline progress (stage, status note, stage-specific data).
-export function toolUpdateState(args: any, _context: any): any {
-  const projectId = requireProjectId();
-  const existing = asRecord(storeGet("state", projectId));
-  const next = {
-    stage: typeof args?.stage === "string" ? args.stage : existing.stage ?? null,
-    note: typeof args?.note === "string" ? args.note : existing.note ?? null,
-    data: { ...asRecord(existing.data), ...asRecord(args?.data) },
+  const existing = getChapter(projectId, chapter);
+  const doc: ChapterDoc = {
+    chapter,
+    markdown,
+    recap,
+    revision: (existing?.revision ?? 0) + 1,
+    submitted_at: nowIso(),
   };
-  storePut("state", projectId, next);
-  return { ok: true };
+  putChapter(projectId, doc);
+  writeChapter(doc);
+
+  if (recap !== null) {
+    const merged = upsertSection("recaps", getRecordSection(projectId, "recaps"), [{ chapter, recap }]);
+    putRecordSection(projectId, "recaps", merged);
+    writeRecaps(merged as Recap[]);
+  }
+
+  let changedSections: RecordSection[] = [];
+  if (args.records && typeof args.records === "object" && !Array.isArray(args.records)) {
+    validateRecordsUpdate(args.records);
+    changedSections = applyRecordsUpdate(projectId, args.records);
+    mirrorChangedSections(projectId, changedSections);
+  }
+
+  return { ok: true, path: `story/chapters/${chapterFileName(chapter)}`, revision: doc.revision };
 }
 
-/// Report one review pass's verdict on one chapter. `changes_requested`
-/// notes are appended to the story's style rules as owner/review feedback.
-export function toolReportReview(args: any, _context: any): any {
+/// Report pipeline progress (stage, status, a status note, stage-specific
+/// data). Does not advance cards itself — card.step.after / timer.tick
+/// drive the stage machine (src/pipeline.ts, later card).
+export function toolUpdateState(args: any, _context: any): any {
+  validate(SCHEMAS.story_update_state, args ?? {});
   const projectId = requireProjectId();
-  const chapter = args?.chapter;
-  const pass = args?.pass;
-  const verdict = args?.verdict;
-  const notes = typeof args?.notes === "string" ? args.notes : "";
-  if (typeof chapter !== "number" || !Number.isInteger(chapter) || chapter < 0) {
-    throw new Error("chapter (non-negative integer) is required");
-  }
-  if (typeof pass !== "string" || pass.trim().length === 0) {
-    throw new Error("pass is required");
-  }
-  if (verdict !== "pass" && verdict !== "changes_requested") {
-    throw new Error("verdict must be 'pass' or 'changes_requested'");
-  }
-  storePut("reviews", `${projectId}:${chapter}:${pass}`, { chapter, pass, verdict, notes });
+  const existing = getPipelineState(projectId);
+  const stage = typeof args?.stage === "string" ? args.stage : existing.stage;
 
-  if (verdict === "changes_requested" && notes.trim().length > 0) {
-    const brief = asRecord(storeGet("brief", projectId));
-    const styleRules = Array.isArray(brief.style_rules) ? (brief.style_rules as unknown[]).slice() : [];
-    styleRules.push(`[chapter ${chapter}, ${pass} review] ${notes}`);
-    storePut("brief", projectId, { ...brief, style_rules: styleRules });
+  const stages = { ...existing.stages };
+  if (typeof args?.stage === "string") {
+    const prior = stages[args.stage];
+    stages[args.stage] = {
+      status: typeof args?.status === "string" ? args.status : prior?.status ?? "active",
+      note: typeof args?.note === "string" ? args.note : prior?.note,
+      updated_at: nowIso(),
+    };
   }
-  return { ok: true };
+
+  const next: PipelineState = {
+    stage,
+    stages,
+    note: typeof args?.note === "string" ? args.note : existing.note,
+    data: { ...existing.data, ...(args?.data && typeof args.data === "object" ? args.data : {}) },
+    updated_at: nowIso(),
+  };
+  putPipelineState(projectId, next);
+  writeState(next);
+  return { ok: true, state: next };
+}
+
+/// Report one review pass's verdict on one chapter. A `changes_requested`
+/// verdict is recorded as feedback; an optional `rule` is additionally
+/// appended to the story's style rules (when a brief exists).
+export function toolReportReview(args: any, _context: any): any {
+  validate(SCHEMAS.story_report_review, args);
+  const projectId = requireProjectId();
+  const { chapter, pass, verdict, notes } = args;
+  const rule: string | null = typeof args.rule === "string" && args.rule.trim().length > 0 ? args.rule : null;
+
+  const existing = getReview(projectId, chapter, pass) ?? { chapter, pass, rounds: [] as ReviewRound[] };
+  const round: ReviewRound = { verdict, notes, at: nowIso() };
+  const doc: ReviewDoc = { chapter, pass, rounds: [...existing.rounds, round] };
+  putReview(projectId, doc);
+  writeReview(doc);
+
+  if (verdict === "changes_requested") {
+    addFeedback(projectId, { source: "review", chapter, text: notes, appended_to_rules: false });
+  }
+
+  if (rule) {
+    const brief = getBrief(projectId);
+    if (brief) {
+      const nextBrief: Brief = {
+        ...brief,
+        elements: { ...brief.elements, style_rules: [...brief.elements.style_rules, rule] },
+        updated_at: nowIso(),
+      };
+      putBrief(projectId, nextBrief);
+      writeBrief(nextBrief);
+      addFeedback(projectId, { source: "review", chapter, text: rule, appended_to_rules: true });
+    } else {
+      addFeedback(projectId, { source: "review", chapter, text: rule, appended_to_rules: false });
+    }
+  }
+
+  return { ok: true, round };
 }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { callerScope, docStore, hostCalls, setHandlers } from "./fakeHost";
+import { callerScope, docStore, fileWrites, hostCalls, setHandlers } from "./fakeHost";
 import { dispatch } from "../src/lib";
 
 function allowPayload(raw: string): any {
@@ -11,6 +11,49 @@ function allowPayload(raw: string): any {
 function invoke(tool: string, args: unknown = {}): any {
   return allowPayload(dispatch("mcp.tool.invoke", { tool, arguments: args, context: {} }));
 }
+
+function minimalBrief(): any {
+  return {
+    about: "",
+    basics: {
+      title: "T",
+      genre: "",
+      format: "prose",
+      chapter_count: 1,
+      pov: "",
+      tense: "",
+      tone: "",
+      audience: "",
+      rating: "",
+    },
+    modes: {},
+    status: {},
+    elements: {
+      premise: "",
+      plot_outline: "",
+      setting: "",
+      characters: [],
+      relationships: [],
+      themes: [],
+      endings: [],
+      style_rules: [],
+      banned_words: [],
+    },
+    updated_at: "",
+  };
+}
+
+const EMPTY_RECORDS = {
+  characters: [],
+  relationships: [],
+  knowledge: [],
+  choices: [],
+  setups: [],
+  glossary: [],
+  chapter_state: [],
+  scene_sheets: [],
+  recaps: [],
+};
 
 describe("dispatch: unhandled hooks", () => {
   beforeEach(() => setHandlers({}));
@@ -26,7 +69,13 @@ describe("dispatch: unhandled hooks", () => {
 });
 
 describe("dispatch: mcp.tool.invoke", () => {
-  beforeEach(() => setHandlers({ ...docStore().handlers, ...callerScope("proj-1") }));
+  let files: Record<string, string>;
+
+  beforeEach(() => {
+    const fw = fileWrites();
+    files = fw.files;
+    setHandlers({ ...docStore().handlers, ...callerScope("proj-1"), ...fw.handlers });
+  });
 
   it("cancels a call to a tool this plugin does not declare", () => {
     const v = JSON.parse(dispatch("mcp.tool.invoke", { tool: "nope", arguments: {}, context: {} }));
@@ -44,20 +93,39 @@ describe("dispatch: mcp.tool.invoke", () => {
     expect(result.error).toMatch(/project-scoped caller/);
   });
 
-  it("story_get_brief returns null before the wizard has run", () => {
-    expect(invoke("story_get_brief")).toEqual({ brief: null });
+  it("story_get_brief returns null brief and no feedback before the wizard has run", () => {
+    expect(invoke("story_get_brief")).toEqual({ brief: null, feedback: [] });
+  });
+
+  it("story_get_records returns every section, empty by default", () => {
+    expect(invoke("story_get_records")).toEqual({ records: EMPTY_RECORDS });
   });
 
   it("story_submit_records then story_get_records round-trips", () => {
-    expect(invoke("story_submit_records", { records: { characters: [{ name: "Ada" }] } })).toEqual({ ok: true });
-    expect(invoke("story_get_records")).toEqual({ records: { characters: [{ name: "Ada" }] } });
+    expect(invoke("story_submit_records", { records: { characters: [{ id: "c1", name: "Ada" }] } })).toEqual({
+      ok: true,
+      sections: ["characters"],
+    });
+    expect(invoke("story_get_records")).toEqual({
+      records: { ...EMPTY_RECORDS, characters: [{ id: "c1", name: "Ada" }] },
+    });
+    expect(files["story/records/characters.json"]).toContain("Ada");
+    expect(files["story/records/characters.md"]).toContain("Ada");
   });
 
-  it("story_submit_records merges instead of replacing", () => {
-    invoke("story_submit_records", { records: { characters: [{ name: "Ada" }] } });
-    invoke("story_submit_records", { records: { glossary: { Ley: "magic grid" } } });
-    expect(invoke("story_get_records")).toEqual({
-      records: { characters: [{ name: "Ada" }], glossary: { Ley: "magic grid" } },
+  it("story_submit_records upsert-merges by identity instead of replacing the section", () => {
+    invoke("story_submit_records", { records: { characters: [{ id: "c1", name: "Ada", role: "lead" }] } });
+    invoke("story_submit_records", { records: { characters: [{ id: "c1", role: "support" }, { id: "c2", name: "Bo" }] } });
+    expect(invoke("story_get_records").records.characters).toEqual([
+      { id: "c1", name: "Ada", role: "support" },
+      { id: "c2", name: "Bo" },
+    ]);
+  });
+
+  it("story_get_records can limit to specific sections", () => {
+    invoke("story_submit_records", { records: { characters: [{ id: "c1", name: "Ada" }], glossary: [{ term: "Ley", definition: "magic grid" }] } });
+    expect(invoke("story_get_records", { sections: ["glossary"] })).toEqual({
+      records: { glossary: [{ term: "Ley", definition: "magic grid" }] },
     });
   });
 
@@ -65,24 +133,62 @@ describe("dispatch: mcp.tool.invoke", () => {
     expect(invoke("story_submit_records", {}).error).toMatch(/records/);
   });
 
+  it("story_submit_records rejects an unknown section", () => {
+    expect(invoke("story_submit_records", { records: { nope: [] } }).error).toMatch(/unknown section/);
+  });
+
+  it("story_submit_records rejects a non-array section value", () => {
+    expect(invoke("story_submit_records", { records: { characters: { id: "c1" } } }).error).toMatch(/must be an array/);
+  });
+
   it("story_submit_chapter requires chapter and markdown", () => {
     expect(invoke("story_submit_chapter", { chapter: 0 }).error).toMatch(/markdown/);
     expect(invoke("story_submit_chapter", { markdown: "x" }).error).toMatch(/chapter/);
   });
 
-  it("story_submit_chapter stores the chapter and mirrors it to a file", () => {
+  it("story_submit_chapter stores the chapter, mirrors it to a file, and starts at revision 1", () => {
     const result = invoke("story_submit_chapter", { chapter: 1, markdown: "# Ch1", recap: "setup" });
-    expect(result).toEqual({ ok: true, path: "story/chapters/chapter-01.md" });
+    expect(result).toEqual({ ok: true, path: "story/chapters/chapter-01.md", revision: 1 });
+    expect(files["story/chapters/chapter-01.md"]).toBe("# Ch1");
     expect(hostCalls.some((c) => c.name === "peckboard_write_file" && c.input.path === "story/chapters/chapter-01.md")).toBe(
       true,
     );
   });
 
-  it("story_update_state merges stage/note/data across calls", () => {
-    expect(invoke("story_update_state", { stage: "pilot", note: "drafting" })).toEqual({ ok: true });
-    expect(invoke("story_update_state", { data: { chapters_ready: 1 } })).toEqual({ ok: true });
-    const brief = allowPayload(dispatch("mcp.tool.invoke", { tool: "story_get_brief", arguments: {}, context: {} }));
-    expect(brief).toEqual({ brief: null }); // state is a separate collection from brief
+  it("story_submit_chapter bumps the revision on resubmission", () => {
+    invoke("story_submit_chapter", { chapter: 1, markdown: "draft one" });
+    const result = invoke("story_submit_chapter", { chapter: 1, markdown: "draft two" });
+    expect(result.revision).toBe(2);
+    expect(files["story/chapters/chapter-01.md"]).toBe("draft two");
+  });
+
+  it("story_submit_chapter's recap merges into the recaps records section and story/recaps.md", () => {
+    invoke("story_submit_chapter", { chapter: 1, markdown: "# Ch1", recap: "Ada arrives." });
+    expect(invoke("story_get_records", { sections: ["recaps"] })).toEqual({
+      records: { recaps: [{ chapter: 1, recap: "Ada arrives." }] },
+    });
+    expect(files["story/recaps.md"]).toContain("Ada arrives.");
+  });
+
+  it("story_submit_chapter accepts a records update alongside the chapter", () => {
+    invoke("story_submit_chapter", {
+      chapter: 1,
+      markdown: "# Ch1",
+      records: { knowledge: [{ id: "k1", fact: "Ada knows the cipher", route: "common", known_by: [] }] },
+    });
+    expect(invoke("story_get_records", { sections: ["knowledge"] }).records.knowledge).toHaveLength(1);
+  });
+
+  it("story_update_state merges stage/status/note/data across calls without touching the brief", () => {
+    expect(invoke("story_update_state", { stage: "pilot", status: "active", note: "drafting" })).toMatchObject({
+      ok: true,
+      state: { stage: "pilot", note: "drafting" },
+    });
+    const second = invoke("story_update_state", { data: { chapters_ready: 1 } });
+    expect(second.state.stage).toBe("pilot"); // stage persists when not re-specified
+    expect(second.state.data).toEqual({ chapters_ready: 1 });
+    expect(second.state.stages.pilot).toMatchObject({ status: "active", note: "drafting" });
+    expect(invoke("story_get_brief")).toEqual({ brief: null, feedback: [] }); // separate collection
   });
 
   it("story_report_review rejects a bad verdict", () => {
@@ -91,18 +197,43 @@ describe("dispatch: mcp.tool.invoke", () => {
     );
   });
 
-  it("story_report_review with changes_requested appends to the brief's style_rules", () => {
-    expect(invoke("story_report_review", { chapter: 2, pass: "line", verdict: "changes_requested", notes: "cut the filler" })).toEqual(
-      { ok: true },
+  it("story_report_review rejects an unknown pass", () => {
+    expect(invoke("story_report_review", { chapter: 1, pass: "nope", verdict: "pass", notes: "x" }).error).toMatch(
+      /pass/,
     );
-    expect(invoke("story_get_brief")).toEqual({
-      brief: { style_rules: ["[chapter 2, line review] cut the filler"] },
-    });
   });
 
-  it("story_report_review with a pass verdict does not touch the brief", () => {
+  it("story_report_review with changes_requested records feedback but leaves the brief alone", () => {
+    expect(
+      invoke("story_report_review", { chapter: 2, pass: "line", verdict: "changes_requested", notes: "cut the filler" }),
+    ).toMatchObject({ ok: true });
+    const got = invoke("story_get_brief");
+    expect(got.brief).toBeNull();
+    expect(got.feedback).toMatchObject([{ source: "review", chapter: 2, text: "cut the filler", appended_to_rules: false }]);
+    expect(files["story/reviews/chapter-02-line.md"]).toContain("cut the filler");
+  });
+
+  it("story_report_review with a pass verdict and no rule touches neither the brief nor feedback", () => {
     invoke("story_report_review", { chapter: 1, pass: "copyedit", verdict: "pass", notes: "clean" });
-    expect(invoke("story_get_brief")).toEqual({ brief: null });
+    expect(invoke("story_get_brief")).toEqual({ brief: null, feedback: [] });
+  });
+
+  it("story_report_review with a rule but no brief yet records feedback with appended_to_rules: false", () => {
+    invoke("story_report_review", { chapter: 1, pass: "line", verdict: "pass", notes: "ok", rule: "Cut filler." });
+    const feedback = invoke("story_get_brief").feedback;
+    expect(feedback).toMatchObject([{ text: "Cut filler.", appended_to_rules: false }]);
+  });
+
+  it("story_report_review with a rule appends to an existing brief's style_rules and marks feedback appended", () => {
+    dispatch("http.request.authed", {
+      method: "POST",
+      path: "/api/plugin-ui/story-writer/wizard",
+      body: JSON.stringify({ brief: minimalBrief() }),
+    });
+    invoke("story_report_review", { chapter: 3, pass: "copyedit", verdict: "pass", notes: "clean", rule: "No present-tense flashbacks." });
+    const got = invoke("story_get_brief");
+    expect(got.brief.elements.style_rules).toEqual(["No present-tense flashbacks."]);
+    expect(got.feedback).toMatchObject([{ text: "No present-tense flashbacks.", appended_to_rules: true }]);
   });
 });
 
@@ -143,12 +274,13 @@ describe("dispatch: http.request.authed (project UI routes)", () => {
       dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/state" }),
     );
     const body = JSON.parse(resp.payload.body);
-    expect(body).toEqual({
-      project_id: "proj-1",
-      brief: { title: "Ashwood" },
-      records: {},
-      pipeline: { stage: "setup" },
-    });
+    expect(body.project_id).toBe("proj-1");
+    expect(body.brief).toEqual({ title: "Ashwood" });
+    expect(body.records).toEqual(EMPTY_RECORDS);
+    expect(body.pipeline.stage).toBe("setup");
+    expect(body.chapters).toEqual([]);
+    expect(body.reviews).toEqual([]);
+    expect(body.feedback).toEqual([]);
   });
 
   it("GET models returns an empty list when the host declares none", () => {

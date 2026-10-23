@@ -42,8 +42,33 @@ export function setHandlers(next: Record<string, (input: any) => unknown>): void
   hostCalls.length = 0;
 }
 
+/// UTF-8 byte length, matching core's size check (`data.len()` on the
+/// serialized JSON — see peckboard src/plugin/host.rs `encode_doc`).
+function byteLen(s: string): number {
+  let len = 0;
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code < 0x80) len += 1;
+    else if (code < 0x800) len += 2;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      len += 4;
+      i++;
+    } else len += 3;
+  }
+  return len;
+}
+
+/// Max serialized size of one stored document, matching core's
+/// `PLUGIN_DOC_MAX_BYTES` (peckboard src/plugin/host.rs) — so tests that
+/// exercise src/store.ts's chunking actually prove it stays under the real
+/// cap, rather than just under some fake-host-only limit.
+export const MAX_DOC_BYTES = 256 * 1024;
+
 /// Host functions for the plugin document store, backed by a plain object.
-/// Keys are `<collection>/<key>`.
+/// Keys are `<collection>/<key>`. Enforces the same size/identifier limits
+/// core does (`validate_id` / `encode_doc` in host.rs) so a store.ts bug
+/// that writes an oversized doc fails the test instead of silently working
+/// only against this fake.
 export function docStore(seed: Record<string, unknown> = {}): {
   docs: Record<string, unknown>;
   handlers: Record<string, (input: any) => unknown>;
@@ -56,8 +81,12 @@ export function docStore(seed: Record<string, unknown> = {}): {
         value: docs[`${collection}/${key}`] ?? null,
       }),
       peckboard_store_put: ({ collection, key, data }: any) => {
+        if (!collection || !key) return { error: "collection and key must not be empty" };
+        if (collection.length > 256 || key.length > 256) return { error: "collection/key exceeds 256 bytes" };
+        const size = byteLen(JSON.stringify(data));
+        if (size > MAX_DOC_BYTES) return { error: `data exceeds ${MAX_DOC_BYTES} bytes` };
         docs[`${collection}/${key}`] = data;
-        return {};
+        return { ok: true };
       },
       peckboard_store_list: ({ collection }: any) => ({
         items: Object.entries(docs)
@@ -66,7 +95,7 @@ export function docStore(seed: Record<string, unknown> = {}): {
       }),
       peckboard_store_delete: ({ collection, key }: any) => {
         delete docs[`${collection}/${key}`];
-        return {};
+        return { ok: true };
       },
     },
   };
@@ -81,5 +110,23 @@ export function callerScope(projectId: string | null = "proj-1"): Record<string,
       session_id: projectId ? "session-1" : null,
       authority: false,
     }),
+  };
+}
+
+/// Host functions for `project_files_write` (`peckboard_write_file`),
+/// recording every written path/content pair.
+export function fileWrites(): {
+  files: Record<string, string>;
+  handlers: Record<string, (input: any) => unknown>;
+} {
+  const files: Record<string, string> = {};
+  return {
+    files,
+    handlers: {
+      peckboard_write_file: ({ path, content, append }: any) => {
+        files[path] = append ? (files[path] ?? "") + content : content;
+        return { ok: true, path, bytes_written: content.length, appended: !!append };
+      },
+    },
   };
 }
