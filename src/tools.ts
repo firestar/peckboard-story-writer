@@ -1,13 +1,21 @@
-// The six worker-facing MCP tools (story_get_brief, story_get_records,
+// The nine worker-facing MCP tools (story_get_brief, story_get_records,
 // story_submit_records, story_submit_chapter, story_update_state,
-// story_report_review). Each is scoped to the calling project
+// story_report_review, story_cold_read_get_text, story_submit_cold_read,
+// story_submit_cold_read_fixes). Each is scoped to the calling project
 // (`requireProjectId`), validates its input against src/schemas.ts (the same
 // schemas the manifest declares), persists through the typed doc store
 // (src/docs.ts), and mirrors the human-readable result into the project
 // repo under story/ (src/files.ts, project_files_write — only allowed during
 // this tool invocation).
+//
+// Session isolation (SW-9, C1): a cold read must come from a FRESH
+// session that never saw the brief/records/cards/other worker output. The
+// host scopes an mcp.tool.invoke call to a session id but not to which
+// card issued it, so `guardSession` enforces the rule itself: the first
+// story_* tool a session calls fixes its role for that project, and it can
+// never call a tool from the other side afterward.
 
-import { requireProjectId } from "./host";
+import { callerScope, requireProjectId } from "./host";
 import { validate } from "./validate";
 import { SCHEMAS } from "./schemas";
 import {
@@ -15,20 +23,50 @@ import {
   applyRecordsUpdate,
   getBrief,
   getChapter,
+  getColdRead,
   getFeedback,
   getPipelineState,
   getRecordSection,
   getReview,
   getRules,
+  getSessionRole,
   putBrief,
   putChapter,
+  putColdRead,
   putPipelineState,
   putRecordSection,
   putReview,
+  SessionRole,
+  setSessionRole,
   upsertSection,
 } from "./docs";
-import { chapterFileName, writeBrief, writeChapter, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
-import { Brief, ChapterDoc, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, StageId, nowIso } from "./types";
+import { chapterFileName, writeBrief, writeChapter, writeColdRead, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
+import { Brief, ChapterDoc, ColdReadDoc, ColdReadItem, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, StageId, nowIso } from "./types";
+
+const SESSION_ROLE_ERRORS: Record<SessionRole, string> = {
+  context:
+    "this session already called a story_* tool that pulls or pushes normal story context — cold reads " +
+    "need a FRESH session that has never seen the brief, records, cards or any other worker's output. " +
+    "Start a new session for the cold read.",
+  cold_reader:
+    "this session is a cold reader (SW-9 C1): it has already read player-visible chapter text and can't " +
+    "call any other story_* tool. Start a new session for writing, records or review.",
+};
+
+/// Fix (or check) this session's role for `projectId`: the first story_*
+/// tool call a session makes decides whether it's a normal "context"
+/// session or a "cold_reader" one, and every later call must match.
+/// Sessions with no id (a direct host call outside mcp.tool.invoke, as in
+/// most unit tests) are not guarded.
+function guardSession(projectId: string, role: SessionRole): void {
+  const sessionId = callerScope().session_id;
+  if (!sessionId) return;
+  const existing = getSessionRole(projectId, sessionId);
+  if (existing && existing !== role) {
+    throw new Error(SESSION_ROLE_ERRORS[existing]);
+  }
+  setSessionRole(projectId, sessionId, role);
+}
 
 function mirrorChangedSections(projectId: string, sections: RecordSection[]): void {
   for (const section of sections) {
@@ -45,6 +83,7 @@ function mirrorChangedSections(projectId: string, sections: RecordSection[]): vo
 export function toolGetBrief(args: any, _context: any): any {
   validate(SCHEMAS.story_get_brief, args ?? {});
   const projectId = requireProjectId();
+  guardSession(projectId, "context");
   // SW-3: prompt pack
   return {
     brief: getBrief(projectId),
@@ -61,6 +100,7 @@ export function toolGetBrief(args: any, _context: any): any {
 export function toolGetRecords(args: any, _context: any): any {
   validate(SCHEMAS.story_get_records, args ?? {});
   const projectId = requireProjectId();
+  guardSession(projectId, "context");
   const wanted: readonly string[] =
     Array.isArray(args?.sections) && args.sections.length > 0 ? args.sections : RECORD_SECTIONS;
   const chapterCap: number | null = typeof args?.chapter === "number" ? args.chapter : null;
@@ -83,6 +123,7 @@ export function toolGetRecords(args: any, _context: any): any {
 export function toolSubmitRecords(args: any, _context: any): any {
   validate(SCHEMAS.story_submit_records, args);
   const projectId = requireProjectId();
+  guardSession(projectId, "context");
   const changed = applyRecordsUpdate(projectId, args.records);
   mirrorChangedSections(projectId, changed);
   const counts: Record<string, number> = {};
@@ -95,6 +136,7 @@ export function toolSubmitRecords(args: any, _context: any): any {
 export function toolSubmitChapter(args: any, _context: any): any {
   validate(SCHEMAS.story_submit_chapter, args);
   const projectId = requireProjectId();
+  guardSession(projectId, "context");
   const chapter: number = args.chapter;
   const markdown: string = args.markdown;
   const recap: string | null = typeof args.recap === "string" ? args.recap : null;
@@ -130,6 +172,7 @@ export function toolSubmitChapter(args: any, _context: any): any {
 export function toolUpdateState(args: any, _context: any): any {
   validate(SCHEMAS.story_update_state, args ?? {});
   const projectId = requireProjectId();
+  guardSession(projectId, "context");
   const existing = getPipelineState(projectId);
 
   const stages = { ...existing.stages };
@@ -161,6 +204,7 @@ export function toolUpdateState(args: any, _context: any): any {
 export function toolReportReview(args: any, _context: any): any {
   validate(SCHEMAS.story_report_review, args);
   const projectId = requireProjectId();
+  guardSession(projectId, "context");
   const { chapter, pass, verdict, notes } = args;
   const rule: string | null = typeof args.rule === "string" && args.rule.trim().length > 0 ? args.rule : null;
 
@@ -191,4 +235,101 @@ export function toolReportReview(args: any, _context: any): any {
   }
 
   return { ok: true, round };
+}
+
+/// Strip any HTML-comment markers (e.g. the `<!-- story-writer:unit=... -->`
+/// the pipeline stamps onto card descriptions) from chapter text before a
+/// cold reader ever sees it — belt and suspenders, since chapter markdown
+/// should already be player-visible only.
+function stripMarkers(markdown: string): string {
+  return markdown.replace(/<!--[\s\S]*?-->/g, "").trim();
+}
+
+/// FRESH READER SESSIONS ONLY. Get one chapter's player-visible text plus
+/// every earlier chapter as a player would see them — nothing else. A
+/// chapter not yet submitted is an error; an earlier chapter that's
+/// missing (shouldn't happen once the pipeline runs chapters in order) is
+/// reported back rather than silently skipped.
+export function toolColdReadGetText(args: any, _context: any): any {
+  validate(SCHEMAS.story_cold_read_get_text, args);
+  const projectId = requireProjectId();
+  guardSession(projectId, "cold_reader");
+  const chapter: number = args.chapter;
+
+  const doc = getChapter(projectId, chapter);
+  if (!doc) throw new Error(`chapter ${chapter} has no submitted text yet`);
+
+  const previous: { chapter: number; text: string }[] = [];
+  const missingPrevious: number[] = [];
+  for (let i = 1; i < chapter; i++) {
+    const prior = getChapter(projectId, i);
+    if (prior) previous.push({ chapter: i, text: stripMarkers(prior.markdown) });
+    else missingPrevious.push(i);
+  }
+
+  return { chapter, text: stripMarkers(doc.markdown), previous, missing_previous: missingPrevious };
+}
+
+/// FRESH READER SESSIONS ONLY. Submit one chapter's cold read (C1): every
+/// point of confusion from a single, un-primed read, whether the first
+/// three lines land, and the first-appearance character list. `attempt`
+/// numbers repeat submissions for the same chapter (a redraft after a
+/// cold-read fix gets a fresh pilot/chapter card and so a fresh report).
+export function toolSubmitColdRead(args: any, _context: any): any {
+  validate(SCHEMAS.story_submit_cold_read, args);
+  const projectId = requireProjectId();
+  guardSession(projectId, "cold_reader");
+  const chapter: number = args.chapter;
+
+  const chapterDoc = getChapter(projectId, chapter);
+  if (!chapterDoc) throw new Error(`chapter ${chapter} has no submitted text yet`);
+
+  const existing = getColdRead(projectId, chapter);
+  const items: ColdReadItem[] = (Array.isArray(args.items) ? args.items : []).map((it: any, i: number) => ({
+    id: `c${i + 1}`,
+    text: it.text,
+    quote: typeof it.quote === "string" ? it.quote : undefined,
+    fix: null,
+  }));
+
+  const doc: ColdReadDoc = {
+    chapter,
+    attempt: (existing?.attempt ?? 0) + 1,
+    chapter_revision: chapterDoc.revision,
+    items,
+    first_three_lines: args.first_three_lines ?? null,
+    characters: Array.isArray(args.characters) ? args.characters : [],
+    submitted_at: nowIso(),
+  };
+  putColdRead(projectId, doc);
+  writeColdRead(doc);
+
+  return { ok: true, items: items.map((i) => ({ id: i.id, text: i.text })) };
+}
+
+/// Record, for a chapter's cold-read report, exactly what changed in the
+/// text to fix each item (C2). The pipeline (src/pipeline.ts) refuses to
+/// let the chapter advance past cold-read fixing until every item here has
+/// a non-null `fix`.
+export function toolSubmitColdReadFixes(args: any, _context: any): any {
+  validate(SCHEMAS.story_submit_cold_read_fixes, args);
+  const projectId = requireProjectId();
+  guardSession(projectId, "context");
+  const chapter: number = args.chapter;
+
+  const doc = getColdRead(projectId, chapter);
+  if (!doc) throw new Error(`chapter ${chapter} has no cold-read report yet`);
+
+  for (const f of Array.isArray(args.fixes) ? args.fixes : []) {
+    const item = doc.items.find((i) => i.id === f.item);
+    if (!item) throw new Error(`unknown cold-read item '${f.item}' for chapter ${chapter}`);
+    item.fix = f.fix;
+    item.fixed_at = nowIso();
+  }
+  doc.fixes_at = nowIso();
+  putColdRead(projectId, doc);
+  writeColdRead(doc);
+
+  const unfixed = doc.items.filter((i) => i.fix === null).map((i) => i.id);
+  return { ok: true, unfixed };
 }

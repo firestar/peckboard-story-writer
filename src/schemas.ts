@@ -4,13 +4,18 @@
 // means a tool's declared contract and its enforced contract can't drift.
 
 import type { Schema } from "./validate";
-import { RECORD_ID_KEY, RECORD_SECTIONS, RecordSection, REVIEW_PASSES, STAGES, STAGE_STATUSES } from "./types";
+import { MAX_UNEXPLAINED_PER_SCENE, RECORD_ID_KEY, RECORD_SECTIONS, RecordSection, REVIEW_PASSES, STAGES, STAGE_STATUSES } from "./types";
 
 export const EMPTY_SCHEMA: Schema = { type: "object", properties: {}, additionalProperties: false };
 
 const ID: Schema = { type: "string", minLength: 1 };
 const TEXT: Schema = { type: "string" };
 const CHAPTER: Schema = { type: "integer", minimum: 0 };
+const FIRST_INTRO: Schema = {
+  type: "object",
+  properties: { chapter: CHAPTER, scene: TEXT, line: TEXT },
+  required: ["chapter", "scene", "line"],
+};
 
 /// One item schema per record section. Only the identity field is required
 /// by the schema: an item updating an existing one may carry just its
@@ -25,7 +30,7 @@ function item(section: RecordSection, properties: Record<string, Schema>): Schem
 }
 
 export const RECORD_ITEM_SCHEMAS: Record<RecordSection, Schema> = {
-  characters: item("characters", { id: ID, name: TEXT }),
+  characters: item("characters", { id: ID, name: TEXT, first_intro: FIRST_INTRO }),
   relationships: item("relationships", { id: ID, a: TEXT, b: TEXT }),
   knowledge: item("knowledge", {
     id: ID,
@@ -39,7 +44,28 @@ export const RECORD_ITEM_SCHEMAS: Record<RecordSection, Schema> = {
   setups: item("setups", { id: ID, promise: TEXT, setup_chapter: CHAPTER }),
   glossary: item("glossary", { term: ID, definition: TEXT }),
   chapter_state: item("chapter_state", { chapter: CHAPTER }),
-  scene_sheets: item("scene_sheets", { id: ID, chapter: CHAPTER, scene: TEXT }),
+  scene_sheets: item("scene_sheets", {
+    id: ID,
+    chapter: CHAPTER,
+    scene: TEXT,
+    unexplained: {
+      type: "array",
+      maxItems: MAX_UNEXPLAINED_PER_SCENE,
+      items: {
+        type: "object",
+        properties: {
+          name: TEXT,
+          kind: { type: "string", enum: ["name", "term", "rule"] },
+          answered_in: {
+            type: "object",
+            properties: { chapter: CHAPTER, scene: TEXT },
+            required: ["chapter"],
+          },
+        },
+        required: ["name", "kind"],
+      },
+    },
+  }),
   recaps: item("recaps", { chapter: CHAPTER, recap: TEXT }),
 };
 
@@ -127,6 +153,74 @@ export const SCHEMAS = {
       },
     },
     required: ["chapter", "pass", "verdict", "notes"],
+    additionalProperties: false,
+  } as Schema,
+
+  story_cold_read_get_text: {
+    type: "object",
+    properties: {
+      chapter: {
+        type: "integer",
+        minimum: 1,
+        description: "Chapter to cold-read (the pilot is chapter 1). Returns only that chapter's text plus chapters 1..N-1 as a player saw them.",
+      },
+    },
+    required: ["chapter"],
+    additionalProperties: false,
+  } as Schema,
+
+  story_submit_cold_read: {
+    type: "object",
+    properties: {
+      chapter: { type: "integer", minimum: 1 },
+      items: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { text: { type: "string", minLength: 1 }, quote: TEXT },
+          required: ["text"],
+        },
+        description: "Every point of confusion found on a single cold read.",
+      },
+      first_three_lines: {
+        type: "object",
+        properties: {
+          narrator: { type: "boolean" },
+          want: { type: "boolean" },
+          tension: { type: "boolean" },
+          clear: { type: "boolean" },
+        },
+        required: ["narrator", "want", "tension", "clear"],
+      },
+      characters: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { name: TEXT, said: TEXT },
+          required: ["name", "said"],
+        },
+        description: "Characters in order of first appearance, with only what the text said about them.",
+      },
+    },
+    required: ["chapter", "items", "characters"],
+    additionalProperties: false,
+  } as Schema,
+
+  story_submit_cold_read_fixes: {
+    type: "object",
+    properties: {
+      chapter: { type: "integer", minimum: 1 },
+      fixes: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { item: ID, fix: { type: "string", minLength: 1 } },
+          required: ["item", "fix"],
+        },
+        description: "One fix per cold-read item id (story_submit_cold_read's returned item ids).",
+      },
+    },
+    required: ["chapter", "fixes"],
     additionalProperties: false,
   } as Schema,
 } as const;

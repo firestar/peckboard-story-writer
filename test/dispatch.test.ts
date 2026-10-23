@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { callerScope, docStore, fileWrites, hostCalls, setHandlers } from "./fakeHost";
+import { callerScope, docStore, fileWrites, hostCalls, setHandlers, setSession } from "./fakeHost";
 import { dispatch } from "../src/lib";
 
 function allowPayload(raw: string): any {
@@ -409,5 +409,125 @@ describe("dispatch: http.request.authed (project UI routes)", () => {
       dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/nope" }),
     );
     expect(resp.payload.status).toBe(404);
+  });
+});
+
+describe("dispatch: cold-read tools (SW-9)", () => {
+  let files: Record<string, string>;
+
+  beforeEach(() => {
+    const fw = fileWrites();
+    files = fw.files;
+    setHandlers({ ...docStore().handlers, ...callerScope("proj-1"), ...fw.handlers });
+    invoke("story_submit_chapter", { chapter: 1, markdown: "# Ch1\n\nAda ran." });
+    invoke("story_submit_chapter", { chapter: 2, markdown: "# Ch2\n\nBo followed." });
+  });
+
+  it("story_cold_read_get_text returns the chapter plus earlier chapters as a player saw them", () => {
+    setSession("cold-1");
+    const result = invoke("story_cold_read_get_text", { chapter: 2 });
+    expect(result.chapter).toBe(2);
+    expect(result.text).toContain("Bo followed");
+    expect(result.previous).toEqual([{ chapter: 1, text: expect.stringContaining("Ada ran") }]);
+    expect(result.missing_previous).toEqual([]);
+  });
+
+  it("story_cold_read_get_text never leaks the brief or records, even when they're set", () => {
+    dispatch("http.request.authed", {
+      method: "POST",
+      path: "/api/plugin-ui/story-writer/wizard",
+      body: JSON.stringify({ brief: { about: "ABOUT-MARK" } }),
+    });
+    invoke("story_submit_records", { records: { glossary: [{ term: "RECORDS-MARK", definition: "x" }] } });
+    setSession("cold-1");
+    const result = invoke("story_cold_read_get_text", { chapter: 2 });
+    expect(JSON.stringify(result)).not.toContain("ABOUT-MARK");
+    expect(JSON.stringify(result)).not.toContain("RECORDS-MARK");
+  });
+
+  it("story_cold_read_get_text strips HTML-comment markers from chapter text", () => {
+    invoke("story_submit_chapter", { chapter: 3, markdown: "Before.<!-- secret --> After." });
+    setSession("cold-1");
+    const result = invoke("story_cold_read_get_text", { chapter: 3 });
+    expect(result.text).not.toContain("secret");
+    expect(result.text).toContain("Before.");
+    expect(result.text).toContain("After.");
+  });
+
+  it("story_cold_read_get_text errors for an unsubmitted chapter, and reports gaps in earlier chapters", () => {
+    setSession("cold-1");
+    expect(invoke("story_cold_read_get_text", { chapter: 9 }).error).toMatch(/no submitted text yet/);
+
+    setSession("session-1");
+    invoke("story_submit_chapter", { chapter: 5, markdown: "# Five" }); // chapters 3, 4 never submitted
+    setSession("cold-2");
+    expect(invoke("story_cold_read_get_text", { chapter: 5 }).missing_previous).toEqual([3, 4]);
+  });
+
+  it("refuses a cold-read tool for a session that already called a context tool", () => {
+    invoke("story_get_brief"); // session-1 is now "context"
+    expect(invoke("story_cold_read_get_text", { chapter: 1 }).error).toMatch(/FRESH session/);
+  });
+
+  it("refuses a context tool for a session that already read cold-read text", () => {
+    setSession("cold-1");
+    invoke("story_cold_read_get_text", { chapter: 1 }); // marks cold-1 as a cold reader
+    expect(invoke("story_get_brief").error).toMatch(/cold reader/);
+  });
+
+  it("story_submit_cold_read stores items with generated ids and mirrors the report to story/cold-reads/", () => {
+    setSession("cold-1");
+    const result = invoke("story_submit_cold_read", {
+      chapter: 2,
+      items: [{ text: "Who is Bo?" }, { text: "Unclear pronoun", quote: "He left." }],
+      first_three_lines: { narrator: true, want: false, tension: true, clear: false },
+      characters: [{ name: "Bo", said: "a stranger" }],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.items).toEqual([
+      { id: "c1", text: "Who is Bo?" },
+      { id: "c2", text: "Unclear pronoun" },
+    ]);
+    expect(files["story/cold-reads/ch-02.md"]).toContain("Who is Bo?");
+    expect(files["story/cold-reads/ch-02.md"]).toContain("Fix: _not yet fixed_");
+  });
+
+  it("story_submit_cold_read errors for a chapter that hasn't been submitted", () => {
+    setSession("cold-1");
+    expect(invoke("story_submit_cold_read", { chapter: 9, items: [], characters: [] }).error).toMatch(/no submitted text yet/);
+  });
+
+  it("story_submit_cold_read_fixes rejects an unknown item id, and reports which items remain unfixed", () => {
+    setSession("cold-1");
+    invoke("story_submit_cold_read", { chapter: 2, items: [{ text: "a" }, { text: "b" }], characters: [] });
+    setSession("session-1");
+    expect(invoke("story_submit_cold_read_fixes", { chapter: 2, fixes: [{ item: "nope", fix: "x" }] }).error).toMatch(
+      /unknown cold-read item/,
+    );
+    const result = invoke("story_submit_cold_read_fixes", { chapter: 2, fixes: [{ item: "c1", fix: "Added a line naming Bo." }] });
+    expect(result.ok).toBe(true);
+    expect(result.unfixed).toEqual(["c2"]);
+    const result2 = invoke("story_submit_cold_read_fixes", { chapter: 2, fixes: [{ item: "c2", fix: "Fixed pronoun." }] });
+    expect(result2.unfixed).toEqual([]);
+    expect(files["story/cold-reads/ch-02.md"]).toContain("Added a line naming Bo.");
+  });
+
+  it("story_submit_cold_read_fixes errors when no cold-read report exists yet for the chapter", () => {
+    expect(invoke("story_submit_cold_read_fixes", { chapter: 2, fixes: [] }).error).toMatch(/no cold-read report yet/);
+  });
+
+  it("story_submit_cold_read bumps attempt and chapter_revision across resubmissions", () => {
+    setSession("cold-1");
+    invoke("story_submit_cold_read", { chapter: 2, items: [], characters: [] });
+    setSession("session-1");
+    invoke("story_submit_chapter", { chapter: 2, markdown: "# Two revised" }); // bumps to revision 2
+    setSession("cold-2");
+    invoke("story_submit_cold_read", { chapter: 2, items: [], characters: [] });
+    const state = JSON.parse(
+      allowPayload(dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/state" })).body,
+    );
+    const doc = state.cold_reads.find((d: any) => d.chapter === 2);
+    expect(doc.attempt).toBe(2);
+    expect(doc.chapter_revision).toBe(2);
   });
 });

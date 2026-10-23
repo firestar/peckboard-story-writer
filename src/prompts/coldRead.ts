@@ -94,7 +94,9 @@ export interface ColdReadFixCardInput {
 const COLD_READ_FIX_LESSON_IDS = ["reader.intro-characters", "reader.openings", "reader.reader-knows", "reader.checking", "reader.vn"];
 /// The writer, with full context, fixing every cold-read item. Unlike the
 /// cold-read card, this one gets the brief and the story's rules — the fix
-/// has to land inside the actual story's voice and continuity.
+/// has to land inside the actual story's voice and continuity. `items` are
+/// pre-formatted "id: text" lines (src/pipeline.ts `coldReadItemTexts`) so
+/// the writer can reference the same id in story_submit_cold_read_fixes.
 export function renderColdReadFixCard(input: ColdReadFixCardInput): ColdReadCardSpec {
   const { chapter, brief, overrides = {}, items } = input;
   const fmt = formatOf(brief);
@@ -106,18 +108,19 @@ export function renderColdReadFixCard(input: ColdReadFixCardInput): ColdReadCard
 
   const itemsMd =
     items.length > 0
-      ? `## Cold-read report\n\n${items.map((it, i) => `${i + 1}. ${clip(it, 2000)}`).join("\n")}`
+      ? `## Cold-read report\n\n${items.map((it) => `- ${clip(it, 2000)}`).join("\n")}`
       : "## Cold-read report\n\n(no items)";
 
   const taskMd = [
     "## Task",
     "",
     "1. Read the brief and the records (story_get_brief, story_get_records).",
-    "2. Read the cold-read report above: every confusion item and the character first-appearance list.",
+    "2. Read the cold-read report above: every confusion item (each with its id) and the character first-appearance list.",
     "3. Fix every item in the chapter text. C2: confusion is the text's fault, not the reader's —" +
       " fix emphasis, order or clarity; never argue the point was already there.",
-    "4. Record item→fix: for each cold-read item, note exactly what in the text changed.",
-    `5. Resubmit the fixed chapter with story_submit_chapter, then log the mapping with ${COLD_READ_TOOLS.submitFixes} {chapter: ${chapter}, fixes}.`,
+    "4. Record item→fix: for each cold-read item above, note exactly what in the text changed.",
+    `5. Resubmit the fixed chapter with story_submit_chapter, then log the mapping with ${COLD_READ_TOOLS.submitFixes} ` +
+      `{chapter: ${chapter}, fixes: [{item: "c1", fix: "..."}, ...]} — one entry per item id shown above.`,
   ].join("\n");
 
   const doneMd = [

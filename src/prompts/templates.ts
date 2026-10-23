@@ -399,21 +399,21 @@ function taskFor(kind: StageKind, input: RenderInput & { chapter?: number; forma
     case "records":
       return [
         "Read the brief (story_get_brief) and the setup-wizard answers.",
-        "Build a character sheet for every character: role, personality, values/fears/flaws, want vs need, lie/wound/ghost, one speech habit, starting emotion, starting attitude to every other character with a reason, and what they know.",
-        "Build the relationships, the glossary, the setup/payoff list (promise → progress → payoff), and chapter 1's scene-fact sheet and chapter-state sheet.",
+        "Build a character sheet for every character: role, personality, values/fears/flaws, want vs need, lie/wound/ghost, one speech habit, starting emotion, starting attitude to every other character with a reason, and what they know. Leave first_intro blank — the chapter that actually introduces each character records it.",
+        "Build the relationships, the glossary, the setup/payoff list (promise → progress → payoff), and chapter 1's scene-fact sheet (with its unexplained names/terms/rules — up to 3, each with an answered_in reference) and chapter-state sheet.",
         "Submit everything with story_submit_records.",
       ];
     case "pilot":
     case "chapter":
       return [
         "Read the brief, the records (story_get_records), and the recap of every earlier chapter.",
-        "Build a scene-fact sheet per scene: time, place, light, who's present and where, what each person wants, what the lead carries/wears/is injured by.",
+        "Build a scene-fact sheet per scene: time, place, light, who's present and where, what each person wants, what the lead carries/wears/is injured by, and up to 3 unexplained names/terms/rules with an answered_in reference.",
         input.format === "vn"
           ? "Look at this chapter's background art and sprites before writing each scene; let the setting drive what happens."
           : "Picture each scene's place before writing it; let the setting drive what happens.",
         "Write the whole chapter scene by scene — never line by line. No jokes, no filler; fights run in phases with a low point before the turn.",
         "Read the full chapter once as a reader; fix anything that doesn't connect to the lines around it; re-read until a full read finds nothing.",
-        "Update the records that changed (chapter state, who-knows-what, setup/payoff, glossary) last, and write a short recap.",
+        "Update the records that changed (chapter state, who-knows-what, setup/payoff, glossary) last, and write a short recap. For every character this chapter introduces for the first time, set their first_intro: {chapter, scene, line} to the exact line that introduces them.",
         "Submit with story_submit_chapter.",
       ];
     case "review":
@@ -422,6 +422,7 @@ function taskFor(kind: StageKind, input: RenderInput & { chapter?: number; forma
         "Read start to finish as a reader; note every place a line doesn't connect to the ones around it.",
         "Fix this pass's concerns in place; re-read until a full read finds nothing.",
         "Check the checklist of past fixes isn't being undone by this pass.",
+        "Check every character's first mention in this chapter against records.characters[].first_intro (chapter, scene, exact line) and that every scene's unexplained item is covered by its answered_in.",
         "Report the verdict with story_report_review.",
       ];
     case "revision":
@@ -460,7 +461,7 @@ function doneFor(kind: StageKind): string[] {
       return [
         "The chapter reads clean start to finish",
         "Every line has a reason; nothing contradicts the records or the setting",
-        "Records updated and a recap written",
+        "Records updated and a recap written; every newly introduced character has a first_intro",
         "story_submit_chapter called",
       ];
     case "review":

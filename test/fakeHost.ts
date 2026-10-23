@@ -109,16 +109,28 @@ export function docStore(seed: Record<string, unknown> = {}): {
   };
 }
 
-/// Fixed caller scope, for tests of project-scoped tools/routes.
+let currentSession: string | null = null;
+
+/// Caller scope for tests of project-scoped tools/routes. Resets the
+/// current session id to the default ("session-1") each time it's
+/// called — call `setSession` afterward to simulate a second, FRESH
+/// session mid-test (SW-9 cold-read isolation).
 export function callerScope(projectId: string | null = "proj-1"): Record<string, (input: any) => unknown> {
+  currentSession = projectId ? "session-1" : null;
   return {
     peckboard_caller_scope: () => ({
       folder_id: projectId ? "folder-1" : null,
       project_id: projectId,
-      session_id: projectId ? "session-1" : null,
+      session_id: currentSession,
       authority: false,
     }),
   };
+}
+
+/// Change which session id subsequent `peckboard_caller_scope` calls
+/// report, without re-registering every other handler.
+export function setSession(id: string | null): void {
+  currentSession = id;
 }
 
 /// Host functions for `project_files_write` (`peckboard_write_file`),

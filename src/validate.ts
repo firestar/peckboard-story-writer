@@ -1,8 +1,8 @@
 // A minimal JSON-schema-subset validator. Supports exactly the shapes the
 // tool schemas in src/schemas.ts use (type, properties, required,
-// additionalProperties, items, enum, minimum, minLength) — enough to give
-// worker tool calls a clear error message without pulling in a JSON-schema
-// library the wasm bundle would have to carry.
+// additionalProperties, items, enum, minimum, minLength, maxItems) — enough
+// to give worker tool calls a clear error message without pulling in a
+// JSON-schema library the wasm bundle would have to carry.
 
 export interface Schema {
   type?: "object" | "array" | "string" | "integer" | "number" | "boolean";
@@ -13,6 +13,7 @@ export interface Schema {
   enum?: readonly unknown[];
   minimum?: number;
   minLength?: number;
+  maxItems?: number;
   description?: string;
 }
 
@@ -70,7 +71,12 @@ export function validate(schema: Schema, value: unknown, path = "args"): void {
       }
     }
   }
-  if (schema.type === "array" && Array.isArray(value) && schema.items) {
-    value.forEach((item, i) => validate(schema.items as Schema, item, `${path}[${i}]`));
+  if (schema.type === "array" && Array.isArray(value)) {
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      throw new Error(`${path}: must have at most ${schema.maxItems} items`);
+    }
+    if (schema.items) {
+      value.forEach((item, i) => validate(schema.items as Schema, item, `${path}[${i}]`));
+    }
   }
 }

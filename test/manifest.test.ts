@@ -146,7 +146,7 @@ describe("manifest", () => {
     });
   });
 
-  it("declares the six worker tools, each worker_allowed and name-valid", () => {
+  it("declares the nine worker tools, each worker_allowed and name-valid", () => {
     const names = manifest.mcp_tools.map((t: any) => t.name);
     expect(names).toEqual([
       "story_get_brief",
@@ -155,6 +155,9 @@ describe("manifest", () => {
       "story_submit_chapter",
       "story_update_state",
       "story_report_review",
+      "story_cold_read_get_text",
+      "story_submit_cold_read",
+      "story_submit_cold_read_fixes",
     ]);
     for (const tool of manifest.mcp_tools) {
       expect(tool.name).toMatch(/^[a-z0-9_]{1,64}$/);
@@ -175,13 +178,17 @@ describe("manifest", () => {
     expect(tool.input_schema.required).toEqual(["chapter", "pass", "verdict", "notes"]);
   });
 
-  it("declares the writer and reviewer model settings", () => {
+  it("declares the writer and reviewer model settings, writer defaulting to Opus 5.5", () => {
     const keys = manifest.settings.map((s: any) => s.key);
     expect(keys).toEqual(["writer_model", "reviewer_model"]);
     for (const field of manifest.settings) {
       expect(field.type).toBe("string");
       expect(field.required).toBeFalsy();
     }
+    const writer = manifest.settings.find((s: any) => s.key === "writer_model");
+    expect(writer.default).toBe("claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333");
+    const reviewer = manifest.settings.find((s: any) => s.key === "reviewer_model");
+    expect(reviewer.default).toBeUndefined();
   });
 });
 

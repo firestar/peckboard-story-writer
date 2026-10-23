@@ -35,6 +35,7 @@ import {
   addFeedback,
   getBrief,
   getChapter,
+  getColdRead,
   getEngine,
   getFeedback,
   getPipelineState,
@@ -47,8 +48,10 @@ import {
   putEngine,
   putPipelineState,
 } from "./docs";
-import { PromptBrief, PromptFeedback, StageKind, draftKey, renderCard } from "./prompts";
+import { PromptBrief, PromptFeedback, draftKey, renderCard } from "./prompts";
+import { renderColdReadCard, renderColdReadFixCard } from "./prompts/coldRead";
 import {
+  DEFAULT_WRITER_MODEL,
   Brief,
   CardRef,
   ELEMENT_KEYS,
@@ -65,6 +68,7 @@ import {
   StageId,
   StageStatus,
   StoryElements,
+  UnitKind,
   Unit,
   nowIso,
 } from "./types";
@@ -81,8 +85,9 @@ const MAX_CREATES_PER_RUN = 8;
 // list_cards returns every card with its full (up to ~48 KB) description, so
 // the hot path never calls it; timer.tick's safety-net sweep is throttled.
 const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
-// ~17 units per chapter (draft + 8 review passes + up to 8 revisions) keeps
-// the engine and cards docs well under core's 256 KiB per-doc cap.
+// ~19 units per chapter (draft + cold-read + cold-read-fix + 8 review
+// passes + up to 8 revisions) keeps the engine and cards docs well under
+// core's 256 KiB per-doc cap.
 export const MAX_CHAPTERS = 40;
 
 interface Budget {
@@ -130,7 +135,7 @@ function chapterCountOf(ctx: Ctx): number {
 
 interface UnitSpec {
   id: string;
-  kind: StageKind;
+  kind: UnitKind;
   priority: number;
   chapter?: number;
   pass?: ReviewPass;
@@ -146,7 +151,8 @@ function unitMarker(id: string, attempt: number): string {
 
 function modelFor(role: "writer" | "reviewer"): string | undefined {
   const raw = getPluginSetting(role === "writer" ? "writer_model" : "reviewer_model");
-  return typeof raw === "string" && raw.trim() !== "" ? raw.trim() : undefined;
+  const trimmed = typeof raw === "string" && raw.trim() !== "" ? raw.trim() : undefined;
+  return trimmed ?? (role === "writer" ? DEFAULT_WRITER_MODEL : undefined);
 }
 
 /// Create a card, retrying once without a model if the host rejects it
@@ -164,6 +170,15 @@ function createCardSafe(ctx: Ctx, input: CreateCardInput): Card {
   }
 }
 
+/// Cold-read-fix card items as "id: text" lines so the writer's
+/// story_submit_cold_read_fixes {fixes:[{item, fix}]} call can reference
+/// exactly the id shown on the card.
+function coldReadItemTexts(projectId: string, chapter: number): string[] {
+  const doc = getColdRead(projectId, chapter);
+  if (!doc) return [];
+  return doc.items.map((i) => `${i.id}: ${i.text}${i.quote ? ` ("${i.quote}")` : ""}`);
+}
+
 /// Turn a pending unit (status "open", no card yet) into a real card.
 /// Before the run's first create, `in_flight` is persisted so that a run
 /// dying between createCard and the final putEngine is detected next time
@@ -172,15 +187,25 @@ function materialize(ctx: Ctx, unit: Unit, spec: UnitSpec): void {
   if (!hasBudget(ctx.budget)) return;
   const marker = unitMarker(unit.id, unit.attempt);
 
-  const rendered = renderCard(spec.kind, {
-    brief: toPromptBrief(ctx.brief),
-    feedback: toPromptFeedback(ctx.feedback),
-    overrides: overridesOf(ctx.brief),
-    chapter: spec.chapter,
-    pass: spec.pass,
-    element: spec.element,
-    feedbackText: spec.feedbackText,
-  });
+  const rendered =
+    spec.kind === "cold_read"
+      ? renderColdReadCard({ chapter: spec.chapter as number, isPilot: spec.chapter === 1 })
+      : spec.kind === "cold_read_fix"
+        ? renderColdReadFixCard({
+            chapter: spec.chapter as number,
+            brief: toPromptBrief(ctx.brief),
+            overrides: overridesOf(ctx.brief),
+            items: coldReadItemTexts(ctx.projectId, spec.chapter as number),
+          })
+        : renderCard(spec.kind, {
+            brief: toPromptBrief(ctx.brief),
+            feedback: toPromptFeedback(ctx.feedback),
+            overrides: overridesOf(ctx.brief),
+            chapter: spec.chapter,
+            pass: spec.pass,
+            element: spec.element,
+            feedbackText: spec.feedbackText,
+          });
   const description = `${rendered.description}\n\n${marker}`;
   const model = modelFor(rendered.role);
   const input: CreateCardInput = {
@@ -306,6 +331,27 @@ function failUnit(unit: Unit, note: string): void {
 }
 
 function completeUnit(ctx: Ctx, unit: Unit): void {
+  if (unit.kind === "cold_read") {
+    const chapter = unit.chapter as number;
+    const doc = getColdRead(ctx.projectId, chapter);
+    const chapterDoc = getChapter(ctx.projectId, chapter);
+    if (!doc || !chapterDoc || doc.chapter_revision !== chapterDoc.revision) {
+      failUnit(unit, `card finished without a fresh story_submit_cold_read for chapter ${chapter}`);
+      return;
+    }
+  }
+  if (unit.kind === "cold_read_fix") {
+    const chapter = unit.chapter as number;
+    const doc = getColdRead(ctx.projectId, chapter);
+    const unfixed = doc ? doc.items.filter((i) => i.fix === null) : [];
+    if (!doc || unfixed.length > 0) {
+      failUnit(
+        unit,
+        `card finished with ${unfixed.length} cold-read item(s) still unfixed for chapter ${chapter}: ${unfixed.map((i) => i.id).join(", ")}`,
+      );
+      return;
+    }
+  }
   unit.status = "done";
   unit.updated_at = nowIso();
   if (unit.kind === "generate" && unit.element) {
@@ -417,6 +463,7 @@ function advancePilot(ctx: Ctx): boolean {
     });
   }
   if (pilot.status !== "done") return false;
+  if (!advanceColdReadChain(ctx, 1)) return false;
   ctx.engine.stage = "pilot_review";
   ctx.dirty = true;
   return true;
@@ -427,7 +474,7 @@ function advanceChapters(ctx: Ctx): boolean {
   let allDone = true;
   for (let i = 2; i <= n; i++) {
     const unit = ensureUnit(ctx, { id: `chapter:${i}`, kind: "chapter", chapter: i, priority: 2, blocked: false });
-    if (unit.status !== "done") allDone = false;
+    if (unit.status !== "done" || !advanceColdReadChain(ctx, i)) allDone = false;
   }
   if (!allDone) return false;
   if (Object.values(ctx.engine.units).some((u) => u.kind === "revision" && u.status === "open")) return false;
@@ -437,6 +484,23 @@ function advanceChapters(ctx: Ctx): boolean {
   }
   ctx.dirty = true;
   return true;
+}
+
+/// Advance one chapter's cold-read (C1) -> cold-read-fix (C2) chain
+/// (pilot included: chapter 1). Returns true once the chain is cleared
+/// (no items reported, or every item has a recorded fix) so the chapter
+/// can advance; false while a card is still open, or stays false after a
+/// card finished without the right story_* submission (completeUnit fails
+/// the unit, so the stage is stuck until `requestRetry`).
+function advanceColdReadChain(ctx: Ctx, chapter: number): boolean {
+  const readUnit = ensureUnit(ctx, { id: `cold_read:${chapter}`, kind: "cold_read", chapter, priority: 1 });
+  if (readUnit.status !== "done") return false;
+
+  const doc = getColdRead(ctx.projectId, chapter);
+  if (!doc || doc.items.length === 0) return true;
+
+  const fixUnit = ensureUnit(ctx, { id: `cold_read_fix:${chapter}`, kind: "cold_read_fix", chapter, priority: 1 });
+  return fixUnit.status === "done";
 }
 
 function advanceReview(ctx: Ctx): boolean {
@@ -516,7 +580,7 @@ function advanceCursor(ctx: Ctx, cursor: ReviewCursor): boolean {
 
 // ── Dashboard mirror ─────────────────────────────────────────────────────
 
-function stageOfKind(kind: StageKind): StageId {
+function stageOfKind(kind: UnitKind, chapter?: number): StageId {
   switch (kind) {
     case "generate":
       return "setup";
@@ -526,6 +590,9 @@ function stageOfKind(kind: StageKind): StageId {
       return "pilot";
     case "chapter":
       return "chapters";
+    case "cold_read":
+    case "cold_read_fix":
+      return chapter === 1 ? "pilot" : "chapters";
     case "review":
     case "revision":
       return "review";
@@ -537,7 +604,7 @@ function syncCardsMirror(ctx: Ctx): void {
     .filter((u): u is Unit & { card_id: string } => u.card_id !== null)
     .map((u) => ({
       card_id: u.card_id,
-      stage: stageOfKind(u.kind),
+      stage: stageOfKind(u.kind, u.chapter),
       kind: u.kind,
       chapter: u.chapter,
       pass: u.pass,

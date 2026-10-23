@@ -4,7 +4,7 @@
 // src/tools.ts handler — never from an http route.
 
 import { writeFile } from "./host";
-import { Brief, ChapterDoc, CharacterSheet, PipelineState, Recap, Records, ReviewDoc } from "./types";
+import { Brief, ChapterDoc, CharacterSheet, ColdReadDoc, PipelineState, Recap, Records, ReviewDoc } from "./types";
 
 function storyPath(rel: string): string {
   return `story/${rel}`;
@@ -88,4 +88,39 @@ export function writeReview(doc: ReviewDoc): void {
 
 export function writeState(state: PipelineState): void {
   writeFile(storyPath("state.json"), JSON.stringify(state, null, 2));
+}
+
+export function writeColdRead(doc: ColdReadDoc): void {
+  const lines = [`# Chapter ${doc.chapter} — cold read`, ""];
+  const unresolved = doc.items.filter((i) => i.fix === null).length;
+  lines.push(`Attempt ${doc.attempt} · against chapter revision ${doc.chapter_revision} · ${doc.items.length} item(s), ${unresolved} unfixed.`, "");
+  if (doc.first_three_lines) {
+    const f = doc.first_three_lines;
+    lines.push(
+      "## First three lines",
+      "",
+      `- Narrator clear: ${f.narrator ? "yes" : "no"}`,
+      `- Want clear: ${f.want ? "yes" : "no"}`,
+      `- Tension clear: ${f.tension ? "yes" : "no"}`,
+      `- Overall clear: ${f.clear ? "yes" : "no"}`,
+      "",
+    );
+  }
+  lines.push("## Items", "");
+  if (doc.items.length === 0) {
+    lines.push("(none)", "");
+  } else {
+    for (const item of doc.items) {
+      lines.push(`### ${item.id}`, "", item.text, "");
+      if (item.quote) lines.push(`> ${item.quote}`, "");
+      lines.push(item.fix ? `Fix: ${item.fix}` : "Fix: _not yet fixed_", "");
+    }
+  }
+  lines.push("## Characters, in order of first appearance", "");
+  if (doc.characters.length === 0) {
+    lines.push("(none)");
+  } else {
+    for (const c of doc.characters) lines.push(`- ${c.name}: ${c.said}`);
+  }
+  writeFile(storyPath(`cold-reads/ch-${String(doc.chapter).padStart(2, "0")}.md`), lines.join("\n"));
 }

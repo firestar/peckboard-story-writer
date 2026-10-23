@@ -9,7 +9,7 @@
 import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
 import { listCards, listModels, requireProjectId } from "./host";
-import { getAllRecords, getBrief, getCards, getChapter, getEngine, getFeedback, getPipelineState, listChapters, listReviews, putBrief } from "./docs";
+import { getAllRecords, getBrief, getCards, getChapter, getEngine, getFeedback, getPipelineState, listChapters, listColdReads, listReviews, putBrief } from "./docs";
 import { MAX_CHAPTERS, PipelineConflict, assembleExport, requestApprove, requestFeedback, requestGenerate, requestRetry, requestStart } from "./pipeline";
 import { DEFAULT_BANNED, styleGuide } from "./prompts";
 import { mergeWizardUpdate, normalizeBrief } from "./wizard";
@@ -131,6 +131,7 @@ function getState(): any {
     reviews: listReviews(projectId),
     feedback: getFeedback(projectId),
     cards: getCards(projectId),
+    cold_reads: listColdReads(projectId),
   };
 }
 

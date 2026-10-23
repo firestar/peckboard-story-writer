@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FakeCard, callerScope, docStore, fakeCards, fileWrites, hostCalls, pluginSettings, setHandlers } from "./fakeHost";
+import { FakeCard, callerScope, docStore, fakeCards, fileWrites, hostCalls, pluginSettings, setHandlers, setSession } from "./fakeHost";
 import { dispatch } from "../src/lib";
 
 const PROJECT = "proj-1";
@@ -51,6 +51,15 @@ function open(cards: FakeCard[]): FakeCard[] {
   return cards.filter((c) => c.step !== "done" && c.step !== "wont_do");
 }
 
+/// A real writer calls story_submit_chapter before its card reaches done —
+/// the cold-read tools (and the engine's own freshness check) need the
+/// chapter's text to already be stored. Submits a throwaway draft, then
+/// finishes the card.
+function submitAndFinish(cards: ReturnType<typeof fakeCards>, cardId: string, chapter: number): void {
+  invoke("story_submit_chapter", { chapter, markdown: `# Chapter ${chapter}\n\nDraft text.` });
+  finishCard(cards, cardId);
+}
+
 function briefFixture(overrides: any = {}): any {
   const modes = {
     premise: "write",
@@ -81,6 +90,37 @@ function setupBrief(overrides: any = {}): any {
   return brief;
 }
 
+/// Run one chapter's cold-read (C1) -> cold-read-fix (C2) chain to
+/// completion against whatever cold-read/fix cards are currently open: a
+/// FRESH session reads and reports (no items by default), the ordinary
+/// session fixes any reported items, and each card is finished so the
+/// engine's chain clears. Pass `itemTexts` to exercise the fix card.
+let coldSessionSeq = 0;
+function finishColdRead(cards: ReturnType<typeof fakeCards>, chapter: number, itemTexts: string[] = []): void {
+  setSession(`cold-${chapter}-${coldSessionSeq++}`);
+  invoke("story_cold_read_get_text", { chapter });
+  invoke("story_submit_cold_read", {
+    chapter,
+    items: itemTexts.map((text) => ({ text })),
+    first_three_lines: { narrator: true, want: true, tension: true, clear: true },
+    characters: [],
+  });
+  setSession("session-1");
+
+  const readCard = open(cards.cards).find((c) => c.title.startsWith("Cold read"))!;
+  expect(readCard, `cold-read card for chapter ${chapter}`).toBeTruthy();
+  finishCard(cards, readCard.id);
+
+  if (itemTexts.length === 0) return;
+  const fixCard = open(cards.cards).find((c) => c.title.startsWith("Cold-read fixes"))!;
+  expect(fixCard, `cold-read-fix card for chapter ${chapter}`).toBeTruthy();
+  invoke("story_submit_cold_read_fixes", {
+    chapter,
+    fixes: itemTexts.map((text, i) => ({ item: `c${i + 1}`, fix: `Fixed: ${text}` })),
+  });
+  finishCard(cards, fixCard.id);
+}
+
 let cards: ReturnType<typeof fakeCards>;
 let docs: Record<string, unknown>;
 
@@ -99,7 +139,7 @@ beforeEach(() => {
 });
 
 describe("pipeline engine: happy path", () => {
-  it("drives records -> pilot -> gate -> chapters -> review -> final -> export", () => {
+  it("drives records -> pilot -> cold read -> gate -> chapters -> cold read -> review -> final -> export", () => {
     setupBrief();
     expect(authed("POST", "/pipeline/start").body.ok).toBe(true);
 
@@ -119,7 +159,8 @@ describe("pipeline engine: happy path", () => {
     expect(ch2.blocked).toBe(true);
     expect(ch3.blocked).toBe(true);
 
-    finishCard(cards, pilotCard.id);
+    submitAndFinish(cards, pilotCard.id, 1);
+    finishColdRead(cards, 1); // C1/C2 for the pilot, no items -> clears straight through
     expect(authed("GET", "/state").body.engine.stage).toBe("pilot_review");
 
     const approve = authed("POST", "/pipeline/approve");
@@ -127,8 +168,10 @@ describe("pipeline engine: happy path", () => {
     expect(cards.cards.find((c) => c.id === ch2.id)!.blocked).toBe(false);
     expect(cards.cards.find((c) => c.id === ch3.id)!.blocked).toBe(false);
 
-    finishCard(cards, ch2.id);
-    finishCard(cards, ch3.id);
+    submitAndFinish(cards, ch2.id, 2);
+    finishColdRead(cards, 2);
+    submitAndFinish(cards, ch3.id, 3);
+    finishColdRead(cards, 3);
     expect(authed("GET", "/state").body.engine.stage).toBe("review");
 
     for (const ch of [1, 2, 3]) {
@@ -148,6 +191,7 @@ describe("pipeline engine: happy path", () => {
     expect(state.pipeline.stages.final.status).toBe("done");
     expect(state.pipeline.stages.records.status).toBe("done");
     expect(state.pipeline.stages.review.status).toBe("done");
+    expect(state.cold_reads.map((d: any) => d.chapter).sort()).toEqual([1, 2, 3]);
 
     for (const ch of [1, 2, 3]) invoke("story_submit_chapter", { chapter: ch, markdown: `Chapter ${ch} text`, recap: `r${ch}` });
     const exported = authed("GET", "/export").body;
@@ -169,7 +213,8 @@ describe("pipeline engine: owner review gate", () => {
     expect(authed("POST", "/pipeline/approve").status).toBe(409); // still in "pilot": pilot card not done yet
 
     const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
-    finishCard(cards, pilotCard.id); // -> pilot_review
+    submitAndFinish(cards, pilotCard.id, 1);
+    finishColdRead(cards, 1); // -> pilot_review
 
     expect(authed("POST", "/pipeline/feedback", { text: "Rushed ending." }).status).toBe(200);
     expect(authed("POST", "/pipeline/approve").status).toBe(409); // pilot revision still open
@@ -188,7 +233,8 @@ describe("pipeline engine: owner feedback revision loop", () => {
     authed("POST", "/pipeline/start");
     finishCard(cards, cards.cards[0].id);
     const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
-    finishCard(cards, pilotCard.id);
+    submitAndFinish(cards, pilotCard.id, 1);
+    finishColdRead(cards, 1);
 
     const fb = authed("POST", "/pipeline/feedback", { text: "Too rushed." });
     expect(fb.body.ok).toBe(true);
@@ -212,7 +258,8 @@ describe("pipeline engine: owner feedback revision loop", () => {
     authed("POST", "/pipeline/start");
     finishCard(cards, cards.cards[0].id);
     const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
-    finishCard(cards, pilotCard.id);
+    submitAndFinish(cards, pilotCard.id, 1);
+    finishColdRead(cards, 1);
 
     expect(authed("POST", "/pipeline/feedback", { chapter: 7, text: "no such chapter" }).status).toBe(400);
   });
@@ -224,7 +271,8 @@ describe("pipeline engine: review changes_requested loop", () => {
     authed("POST", "/pipeline/start");
     finishCard(cards, cards.cards[0].id); // records
     const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
-    finishCard(cards, pilotCard.id); // -> pilot_review
+    submitAndFinish(cards, pilotCard.id, 1); // -> cold read
+    finishColdRead(cards, 1); // -> pilot_review
     authed("POST", "/pipeline/approve"); // -> chapters (vacuous, chapter_count 1) -> review
 
     expect(authed("GET", "/state").body.engine.stage).toBe("review");
@@ -254,7 +302,8 @@ describe("pipeline engine: review changes_requested loop", () => {
     setupBrief({ basics: { ...briefFixture().basics, chapter_count: 1 } });
     authed("POST", "/pipeline/start");
     finishCard(cards, cards.cards[0].id);
-    finishCard(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id);
+    submitAndFinish(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id, 1);
+    finishColdRead(cards, 1);
     authed("POST", "/pipeline/approve");
 
     for (let round = 1; round <= 2; round++) {
@@ -270,6 +319,170 @@ describe("pipeline engine: review changes_requested loop", () => {
     // instead of asking for a third structure review.
     expect(open(cards.cards).some((c) => c.title.includes("(structure)"))).toBe(false);
     expect(open(cards.cards).some((c) => c.title.includes("(character)"))).toBe(true);
+  });
+});
+
+describe("pipeline engine: cold-read stage (SW-9)", () => {
+  it("creates the cold-read card only after the pilot is written, with no brief content, on the reviewer model", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id); // records
+    expect(open(cards.cards).some((c) => c.title.startsWith("Cold read"))).toBe(false);
+
+    const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
+    submitAndFinish(cards, pilotCard.id, 1);
+
+    const readCard = open(cards.cards).find((c) => c.title.startsWith("Cold read"))!;
+    expect(readCard).toBeTruthy();
+    expect(readCard.model).toBe("claude:reviewer@acct");
+    expect(readCard.title).toContain("pilot");
+    expect(readCard.description).not.toContain("A city falls."); // the brief's `about`
+  });
+
+  it("creates the fix card, on the writer model, only once the cold read reports an item; the gate waits for it", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    submitAndFinish(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id, 1);
+
+    setSession("cold-1");
+    invoke("story_cold_read_get_text", { chapter: 1 });
+    invoke("story_submit_cold_read", {
+      chapter: 1,
+      items: [{ text: "Who is Nadia?" }],
+      first_three_lines: { narrator: true, want: true, tension: true, clear: true },
+      characters: [{ name: "Nadia", said: "a name on a voicemail" }],
+    });
+    setSession("session-1");
+    const readCard = open(cards.cards).find((c) => c.title.startsWith("Cold read"))!;
+    finishCard(cards, readCard.id);
+
+    // With one item reported, the fix card exists and the gate is blocked on it.
+    const fixCard = open(cards.cards).find((c) => c.title.startsWith("Cold-read fixes"))!;
+    expect(fixCard).toBeTruthy();
+    expect(fixCard.model).toBe("claude:writer@acct");
+    expect(fixCard.description).toContain("c1: Who is Nadia?");
+    expect(authed("GET", "/state").body.engine.stage).toBe("pilot"); // not pilot_review yet
+    expect(authed("POST", "/pipeline/approve").status).toBe(409);
+
+    invoke("story_submit_cold_read_fixes", { chapter: 1, fixes: [{ item: "c1", fix: "Named her as the narrator's sister on first mention." }] });
+    finishCard(cards, fixCard.id);
+    expect(authed("GET", "/state").body.engine.stage).toBe("pilot_review");
+  });
+
+  it("creates each parallel chapter's cold-read/fix cards only once that chapter's own draft is done", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    submitAndFinish(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id, 1);
+    finishColdRead(cards, 1);
+    authed("POST", "/pipeline/approve");
+
+    const ch2 = cards.cards.find((c) => c.title === "Chapter 2")!;
+    const ch3 = cards.cards.find((c) => c.title === "Chapter 3")!;
+    expect(open(cards.cards).some((c) => c.title.startsWith("Cold read"))).toBe(false);
+
+    submitAndFinish(cards, ch2.id, 2);
+    expect(open(cards.cards).filter((c) => c.title.startsWith("Cold read"))).toHaveLength(1);
+    expect(open(cards.cards).some((c) => c.title === "Cold read — chapter 3")).toBe(false);
+
+    finishColdRead(cards, 2);
+    submitAndFinish(cards, ch3.id, 3);
+    expect(open(cards.cards).some((c) => c.title === "Cold read — chapter 3")).toBe(true);
+    finishColdRead(cards, 3);
+    expect(authed("GET", "/state").body.engine.stage).toBe("review");
+  });
+
+  it("fails the cold-read unit if its card finishes without story_submit_cold_read, and a retry recovers it", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    submitAndFinish(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id, 1);
+
+    const readCard = open(cards.cards).find((c) => c.title.startsWith("Cold read"))!;
+    finishCard(cards, readCard.id); // no story_submit_cold_read call at all
+
+    let state = authed("GET", "/state").body;
+    expect(state.engine.units["cold_read:1"].status).toBe("failed");
+    expect(state.engine.stage).toBe("pilot"); // stuck
+
+    expect(authed("POST", "/pipeline/retry").body.retried).toEqual(["cold_read:1"]);
+    finishColdRead(cards, 1);
+    state = authed("GET", "/state").body;
+    expect(state.engine.stage).toBe("pilot_review");
+  });
+
+  it("fails the cold-read-fix unit if its card finishes with items still unfixed, and a retry recovers it", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    submitAndFinish(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id, 1);
+
+    setSession("cold-1");
+    invoke("story_cold_read_get_text", { chapter: 1 });
+    invoke("story_submit_cold_read", { chapter: 1, items: [{ text: "a" }, { text: "b" }], characters: [] });
+    setSession("session-1");
+    finishCard(cards, open(cards.cards).find((c) => c.title.startsWith("Cold read"))!.id);
+
+    const fixCard = open(cards.cards).find((c) => c.title.startsWith("Cold-read fixes"))!;
+    invoke("story_submit_cold_read_fixes", { chapter: 1, fixes: [{ item: "c1", fix: "fixed a" }] }); // c2 left unfixed
+    finishCard(cards, fixCard.id);
+
+    let state = authed("GET", "/state").body;
+    expect(state.engine.units["cold_read_fix:1"].status).toBe("failed");
+    expect(state.engine.units["cold_read_fix:1"].note).toContain("c2");
+    expect(state.engine.stage).toBe("pilot");
+
+    expect(authed("POST", "/pipeline/retry").body.retried).toEqual(["cold_read_fix:1"]);
+    const retriedFixCard = open(cards.cards).find((c) => c.title.startsWith("Cold-read fixes"))!;
+    expect(retriedFixCard.id).not.toBe(fixCard.id);
+    invoke("story_submit_cold_read_fixes", { chapter: 1, fixes: [{ item: "c2", fix: "fixed b" }] });
+    finishCard(cards, retriedFixCard.id);
+
+    state = authed("GET", "/state").body;
+    expect(state.engine.stage).toBe("pilot_review");
+  });
+
+  it("does not duplicate the cold-read or fix card on a repeated card.step.after or timer.tick", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    submitAndFinish(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id, 1);
+
+    setSession("cold-1");
+    invoke("story_cold_read_get_text", { chapter: 1 });
+    invoke("story_submit_cold_read", { chapter: 1, items: [{ text: "a" }], characters: [] });
+    setSession("session-1");
+    const readCard = open(cards.cards).find((c) => c.title.startsWith("Cold read"))!;
+    finishCard(cards, readCard.id);
+
+    const countAfterFix = cards.cards.length;
+    dispatch("card.step.after", { card_id: readCard.id, project_id: PROJECT, new_step: "done", terminal: true });
+    dispatch("timer.tick", { now: "2026-01-01T00:00:00Z" });
+    expect(cards.cards.length).toBe(countAfterFix);
+  });
+
+  it("uses the default writer model (Opus 5.5) for the fix card when writer_model is unset", () => {
+    setHandlers({
+      ...docStore().handlers,
+      ...callerScope(PROJECT),
+      ...fileWrites().handlers,
+      ...cards.handlers,
+      ...pluginSettings({ reviewer_model: "claude:reviewer@acct" }), // writer_model left unset
+    });
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    submitAndFinish(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id, 1);
+
+    setSession("cold-1");
+    invoke("story_cold_read_get_text", { chapter: 1 });
+    invoke("story_submit_cold_read", { chapter: 1, items: [{ text: "a" }], characters: [] });
+    setSession("session-1");
+    finishCard(cards, open(cards.cards).find((c) => c.title.startsWith("Cold read"))!.id);
+
+    const fixCard = open(cards.cards).find((c) => c.title.startsWith("Cold-read fixes"))!;
+    expect(fixCard.model).toBe("claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333");
   });
 });
 
@@ -398,7 +611,8 @@ describe("pipeline engine: models and retry", () => {
     setupBrief({ basics: { ...briefFixture().basics, chapter_count: 1 } });
     authed("POST", "/pipeline/start");
     finishCard(cards, cards.cards[0].id);
-    finishCard(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id);
+    submitAndFinish(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id, 1);
+    finishColdRead(cards, 1);
     authed("POST", "/pipeline/approve");
     const reviewCard = open(cards.cards).find((c) => c.title.includes("(structure)"))!;
     expect(reviewCard.model).toBe("claude:reviewer@acct");
@@ -450,16 +664,44 @@ describe("pipeline engine: host limits", () => {
     setupBrief({ basics: { ...briefFixture().basics, chapter_count: 40 } });
     expect(authed("POST", "/pipeline/start").status).toBe(200);
 
-    // Every review pass requests changes once (the most units a story can
-    // accumulate); everything else finishes as soon as it opens.
+    // Every review pass requests changes once and every cold read reports
+    // one item (the most units a story can accumulate); everything else
+    // finishes as soon as it opens.
     const challenged = new Set<string>();
-    for (let guard = 0; guard < 5000; guard++) {
+    let coldSeq = 0;
+    for (let guard = 0; guard < 6000; guard++) {
       const next = open(cards.cards)[0];
       if (!next) {
         const stage = authed("GET", "/state").body.engine.stage;
         if (stage === "pilot_review") authed("POST", "/pipeline/approve");
         else if (stage === "final") break;
         else dispatch("timer.tick", { now: "" });
+        continue;
+      }
+      if (next.title.startsWith("Pilot") || next.title.startsWith("Chapter ")) {
+        const ch = Number(/(\d+)$/.exec(next.title)![1]);
+        invoke("story_submit_chapter", { chapter: ch, markdown: `# Chapter ${ch}\n\nDraft.` });
+        finishCard(cards, next.id);
+        continue;
+      }
+      if (next.title.startsWith("Cold read")) {
+        const ch = Number(/chapter (\d+)$/.exec(next.title)![1]);
+        setSession(`cold-${ch}-${coldSeq++}`);
+        invoke("story_cold_read_get_text", { chapter: ch });
+        invoke("story_submit_cold_read", {
+          chapter: ch,
+          items: [{ text: "n" }],
+          first_three_lines: { narrator: true, want: true, tension: true, clear: true },
+          characters: [],
+        });
+        setSession("session-1");
+        finishCard(cards, next.id);
+        continue;
+      }
+      if (next.title.startsWith("Cold-read fixes")) {
+        const ch = Number(/chapter (\d+)$/.exec(next.title)![1]);
+        invoke("story_submit_cold_read_fixes", { chapter: ch, fixes: [{ item: "c1", fix: "n" }] });
+        finishCard(cards, next.id);
         continue;
       }
       const pass = ALL_PASSES.find((p) => next.title.includes(`(${p})`));
@@ -475,7 +717,7 @@ describe("pipeline engine: host limits", () => {
 
     const engine = docs[`engine/${PROJECT}`] as any;
     expect(engine.finished).toBe(true);
-    expect(Object.keys(engine.units)).toHaveLength(1 + 1 + 39 + 40 * 8 * 2);
+    expect(Object.keys(engine.units)).toHaveLength(1 + 1 + 39 + 40 * 2 + 40 * 8 * 2);
     const cap = 256 * 1024;
     expect(JSON.stringify(engine).length).toBeLessThan(cap * 0.8);
     expect(JSON.stringify(docs[`cards/${PROJECT}`]).length).toBeLessThan(cap * 0.8);

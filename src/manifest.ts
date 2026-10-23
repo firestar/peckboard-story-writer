@@ -1,5 +1,5 @@
 // The plugin manifest JSON body — identity, hooks, permissions, the project
-// "Story" tab, its authenticated data routes, and the six MCP tools worker
+// "Story" tab, its authenticated data routes, and the nine MCP tools worker
 // sessions use to pull story context and push results.
 
 // Single source of truth for the version: package.json. Bundled in by
@@ -7,6 +7,7 @@
 // a manifest that self-reports an old version makes the registry's
 // "upgrade available" chip permanent.
 import { version as VERSION } from "../package.json";
+import { DEFAULT_WRITER_MODEL } from "./types";
 import { SCHEMAS } from "./schemas";
 
 const REPOSITORY = "https://github.com/firestar/peckboard-story-writer";
@@ -16,16 +17,21 @@ const DESCRIPTION =
   "about, basics, and — per element: premise, plot outline, setting/world, characters, " +
   "relationships, themes, endings/routes/choices, style rules, banned words — a mode of " +
   "'I write it' / 'AI drafts, I edit' / 'AI generates') and then drives the writing " +
-  "pipeline with cards: records -> pilot chapter -> owner review gate -> chapters in " +
-  "parallel -> review passes (structure, character, pacing, line, copyedit, plus " +
-  "AI-tell / echo-word / sentence-shape) -> final export. The dashboard shows each " +
-  "stage's cards, worker status, per-chapter progress, character sheets, the " +
-  "per-chapter emotion/attitude matrix, who-knows-what, setup/payoff tracking, the " +
-  "choices map, a glossary, and chapter recaps. Feedback on the pilot or any chapter " +
-  "becomes a revision card and can be appended to the story's style rules. Worker " +
-  "sessions pull context and push results through story_get_brief, story_get_records, " +
-  "story_submit_records, story_submit_chapter, story_update_state and " +
-  "story_report_review; the writer and reviewer models are configurable below.";
+  "pipeline with cards: records -> pilot chapter -> cold read -> cold-read fixes -> owner " +
+  "review gate -> chapters in parallel (each: write -> cold read -> cold-read fixes) -> " +
+  "review passes (structure, character, pacing, line, copyedit, plus AI-tell / echo-word / " +
+  "sentence-shape) -> final export. Every cold-read card runs in a FRESH session that sees " +
+  "only the chapter text (plus earlier chapters as a player would see them) — never the " +
+  "brief, records, cards or other worker output. The dashboard shows each stage's cards, " +
+  "worker status, per-chapter progress, character sheets (including first introduction), " +
+  "the per-chapter emotion/attitude matrix, who-knows-what, setup/payoff tracking, cold-read " +
+  "items and fix status, the choices map, a glossary, and chapter recaps. Feedback on the " +
+  "pilot or any chapter becomes a revision card and can be appended to the story's style " +
+  "rules. Worker sessions pull context and push results through story_get_brief, " +
+  "story_get_records, story_submit_records, story_submit_chapter, story_update_state, " +
+  "story_report_review, story_cold_read_get_text, story_submit_cold_read and " +
+  "story_submit_cold_read_fixes; the writer (default Claude Opus 5.5) and reviewer models " +
+  "are configurable below.";
 
 // Inline SVG (lucide "book") for the project tab icon; rendered sandboxed.
 const ICON =
@@ -46,7 +52,7 @@ export function manifestJson(): string {
       "contribute_sidebar", // the project_items tab below
       "data_store", // brief / records / per-chapter docs / pipeline state
       "cards_write", // advance pipeline cards (peckboard_update_card)
-      "provide_mcp_tools", // the six worker-facing story_* tools
+      "provide_mcp_tools", // the nine worker-facing story_* tools
       "project_files_read", // read story/ files already written
       "project_files_write", // write chapters/records into story/ (tool-invocation only)
       "models_read", // model picker in the wizard UI
@@ -86,17 +92,22 @@ export function manifestJson(): string {
         title: "Writer model",
         description:
           "Model id (provider:model[@account]) the pipeline assigns to pilot-chapter and " +
-          "chapter-drafting cards. Example: claude:claude-opus-5-5@<account>.",
+          "chapter-drafting cards and their cold-read fix cards. Default: Claude Opus 5.5 — " +
+          "the owner rejected GPT-5.6 Sol's prose on a pilot read; judge any writer model by " +
+          "a pilot chapter the owner plays, and switch models when a pilot fails, rather than " +
+          "adding more rules.",
         required: false,
         type: "string",
-        placeholder: "claude:claude-opus-5-5@<account>",
+        default: DEFAULT_WRITER_MODEL,
+        placeholder: DEFAULT_WRITER_MODEL,
       },
       {
         key: "reviewer_model",
         title: "Reviewer model",
         description:
           "Model id (provider:model[@account]) the pipeline assigns to the structure / " +
-          "character / pacing / line / copyedit review-pass cards.",
+          "character / pacing / line / copyedit review-pass cards, and to the cold-read (C1) " +
+          "card — always a FRESH session with no story context, only the chapter text.",
         required: false,
         type: "string",
         placeholder: "claude:claude-opus-5-5@<account>",
@@ -173,6 +184,35 @@ export function manifestJson(): string {
           "verdict's notes are recorded as feedback; an optional 'rule' is additionally " +
           "appended to the story's style rules as a durable owner/review decision.",
         input_schema: SCHEMAS.story_report_review,
+        worker_allowed: true,
+      },
+      {
+        name: "story_cold_read_get_text",
+        description:
+          "FRESH READER SESSIONS ONLY. Get the player-visible text of one chapter (the pilot " +
+          "is chapter 1) plus every earlier chapter as a player would see them — nothing else: " +
+          "no brief, no records, no cards, no other worker's output. Never call story_get_brief " +
+          "or story_get_records in this session.",
+        input_schema: SCHEMAS.story_cold_read_get_text,
+        worker_allowed: true,
+      },
+      {
+        name: "story_submit_cold_read",
+        description:
+          "FRESH READER SESSIONS ONLY. Submit one chapter's cold read (C1): every point of " +
+          "confusion from a single, un-primed read; whether the first three lines establish " +
+          "the narrator, their want and the tension; and every character in order of first " +
+          "appearance with only what the text said about them.",
+        input_schema: SCHEMAS.story_submit_cold_read,
+        worker_allowed: true,
+      },
+      {
+        name: "story_submit_cold_read_fixes",
+        description:
+          "Record, for a chapter's cold-read report, exactly what changed in the text to fix " +
+          "each item (C2: confusion is the text's fault). Every item needs a fix before the " +
+          "chapter can advance past cold-read fixing.",
+        input_schema: SCHEMAS.story_submit_cold_read_fixes,
         worker_allowed: true,
       },
     ],

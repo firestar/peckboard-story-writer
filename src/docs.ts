@@ -7,6 +7,7 @@ import { deleteDoc, getDoc, listDocs, putDoc } from "./store";
 import {
   Brief,
   CardRef,
+  ColdReadDoc,
   ChapterDoc,
   EngineState,
   Feedback,
@@ -140,6 +141,54 @@ export function listReviews(projectId: string): ReviewDoc[] {
   return listDocs("reviews")
     .filter((d) => d.key.startsWith(prefix))
     .map((d) => d.value as ReviewDoc);
+}
+
+// ── Cold reads (C1/C2) ───────────────────────────────────────────────
+
+export function getColdRead(projectId: string, chapter: number): ColdReadDoc | null {
+  return getDoc("coldreads", pk(projectId, chapter)) ?? null;
+}
+
+export function putColdRead(projectId: string, doc: ColdReadDoc): void {
+  putDoc("coldreads", pk(projectId, doc.chapter), doc);
+}
+
+export function listColdReads(projectId: string): ColdReadDoc[] {
+  const prefix = `${projectId}:`;
+  return listDocs("coldreads")
+    .filter((d) => d.key.startsWith(prefix))
+    .map((d) => d.value as ColdReadDoc)
+    .sort((a, b) => a.chapter - b.chapter);
+}
+
+// ── Cold-read session roles ──────────────────────────────────────────
+// A cold-read reader must be a FRESH session: never one that already
+// pulled story context (brief/records/state) or pushed a worker result.
+// The host doesn't scope which card a session belongs to, so this is
+// enforced here by remembering each session's first role and refusing to
+// let it switch sides (src/tools.ts `guardSession`).
+
+export type SessionRole = "context" | "cold_reader";
+
+// Oldest-inserted dropped first once a project's session map grows past
+// this — a session only needs its first call remembered, so an unbounded
+// map would just be wasted store space on a long-running project.
+const SESSION_ROLES_MAX = 300;
+
+export function getSessionRole(projectId: string, sessionId: string): SessionRole | null {
+  const roles = getDoc("sessions", projectId) as Record<string, SessionRole> | null;
+  return roles?.[sessionId] ?? null;
+}
+
+/// First call wins: once a session has a role, later calls are a no-op
+/// (the caller already checked it matches before doing any work).
+export function setSessionRole(projectId: string, sessionId: string, role: SessionRole): void {
+  const roles = (getDoc("sessions", projectId) as Record<string, SessionRole> | null) ?? {};
+  if (roles[sessionId]) return;
+  const entries = Object.entries(roles);
+  while (entries.length >= SESSION_ROLES_MAX) entries.shift();
+  entries.push([sessionId, role]);
+  putDoc("sessions", projectId, Object.fromEntries(entries));
 }
 
 // ── Pipeline state ───────────────────────────────────────────────────────

@@ -3,6 +3,12 @@
 // calls here, so this module is free to import from anywhere (tools, http,
 // manifest, tests) without pulling in the Extism boundary.
 
+/// Default writer model when the `writer_model` plugin setting is unset.
+/// 2026-10-23 owner decision: GPT-5.6 Sol's prose was rejected ("plain
+/// ugly"); judge any writer model by a pilot chapter the owner plays, and
+/// switch models when a pilot fails, rather than adding more rules.
+export const DEFAULT_WRITER_MODEL = "claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333";
+
 /// Per-element authoring mode, chosen in the setup wizard.
 export type ElementMode = "write" | "draft" | "generate";
 
@@ -54,6 +60,12 @@ export interface CharacterAttitude {
   reason: string;
 }
 
+export interface CharacterFirstIntro {
+  chapter: number;
+  scene: string;
+  line: string;
+}
+
 export interface CharacterSheet {
   id: string;
   name: string;
@@ -71,6 +83,7 @@ export interface CharacterSheet {
   initial_emotion: string;
   attitudes: CharacterAttitude[];
   knows: string[];
+  first_intro?: CharacterFirstIntro;
   notes?: string;
 }
 
@@ -219,6 +232,17 @@ export interface ChapterState {
   notes?: string;
 }
 
+export interface UnexplainedTerm {
+  name: string;
+  kind: "name" | "term" | "rule";
+  answered_in?: { chapter: number; scene?: string };
+}
+
+/// C3: cap the per-scene list of unexplained names/terms/rules so it can't
+/// grow into an open-ended todo list — each is a question the reader
+/// carries and must be answered in time.
+export const MAX_UNEXPLAINED_PER_SCENE = 3;
+
 export interface SceneSheet {
   id: string;
   chapter: number;
@@ -229,6 +253,7 @@ export interface SceneSheet {
   facts: string[];
   goal?: string;
   outcome?: string;
+  unexplained?: UnexplainedTerm[];
 }
 
 export interface Recap {
@@ -342,6 +367,41 @@ export interface ReviewDoc {
   rounds: ReviewRound[];
 }
 
+export interface ColdReadItem {
+  id: string;
+  text: string;
+  quote?: string;
+  fix: string | null;
+  fixed_at?: string;
+}
+
+export interface ColdReadCharacterSighting {
+  name: string;
+  said: string;
+}
+
+export interface ColdReadFirstThreeLines {
+  narrator: boolean;
+  want: boolean;
+  tension: boolean;
+  clear: boolean;
+}
+
+/// One chapter's cold-read (C1) report plus the writer's item -> fix map
+/// (C2). `attempt`/`chapter_revision` tie a report to the pilot/chapter
+/// draft it was read against, so a later redraft can't be judged fixed by
+/// an earlier report.
+export interface ColdReadDoc {
+  chapter: number;
+  attempt: number;
+  chapter_revision: number;
+  items: ColdReadItem[];
+  first_three_lines: ColdReadFirstThreeLines | null;
+  characters: ColdReadCharacterSighting[];
+  submitted_at: string;
+  fixes_at?: string;
+}
+
 // ── Pipeline state ───────────────────────────────────────────────────────
 
 export const STAGES = ["setup", "records", "pilot", "pilot_review", "chapters", "review", "final"] as const;
@@ -386,10 +446,12 @@ export interface CardRef {
 
 // ── Pipeline engine ──────────────────────────────────────────────────────
 
-/// The six kinds of pipeline card the engine creates. Same literal values
-/// as `prompts.StageKind` (kept separate so types.ts doesn't depend on the
-/// prompts module) — a Unit's `kind` is always a valid `renderCard` input.
-export const UNIT_KINDS = ["records", "pilot", "chapter", "review", "revision", "generate"] as const;
+/// The eight kinds of pipeline card the engine creates. Same literal
+/// values as `prompts.StageKind` (kept separate so types.ts doesn't depend
+/// on the prompts module) — a Unit's `kind` is always a valid `renderCard`
+/// input, except cold_read/cold_read_fix which are rendered directly by
+/// src/prompts/coldRead.ts (SW-9), not through renderCard/StageKind.
+export const UNIT_KINDS = ["records", "pilot", "chapter", "review", "revision", "generate", "cold_read", "cold_read_fix"] as const;
 export type UnitKind = (typeof UNIT_KINDS)[number];
 
 export type UnitStatus = "open" | "done" | "failed";
