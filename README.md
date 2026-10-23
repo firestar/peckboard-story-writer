@@ -103,8 +103,9 @@ stage 1): `bridge.js` (postMessage fetch bridge + `plugin-ui-event`
 refresh; GETs are re-posted with backoff because a cold-loaded frame can
 run before the host attaches its listener), `model.js` (pure catalogs,
 normalizers, merge/gate logic — unit-tested), `wizard.js` (the wizard),
-`main.js` (theme + routing: wizard while the stage is `setup`, a minimal
-pipeline view after, setup read-only from there), `style.js` (PeckBoard's
+`dash-model.js` + `dashboard.js` (the pipeline dashboard, below),
+`main.js` (theme + routing: wizard while the stage is `setup`, the
+dashboard after, setup read-only from there), `style.js` (PeckBoard's
 light/dark tokens, `?theme=` or `prefers-color-scheme`).
 
 - Steps: story idea -> basics (title; genre, format, POV, tense, tone,
@@ -133,6 +134,57 @@ light/dark tokens, `?theme=` or `prefers-color-scheme`).
   typing or moving focus.
 - `GET .../defaults` supplies the starting brief, the editable style
   guide, the built-in banned words and the chapter cap.
+
+## Pipeline dashboard (Story tab, once started)
+
+`page/dashboard.js` renders the live pipeline; every derivation (stage
+status, worker status, grid cells, record tables) lives in
+`page/dash-model.js` and is unit-tested (`test/dashModel.test.ts`).
+
+- Header: title, format / chapters / genre / POV, a live indicator,
+  **Export** (downloads every written chapter as one Markdown file via
+  `GET .../export`) and **View setup** (the wizard, read-only). Stat tiles:
+  stage, chapters written, review passes done, cards with a worker right
+  now, and the owner's feedback count.
+- Owner gate: while the stage is `pilot_review` a banner offers **Read
+  pilot**, **Send feedback** and **Approve pilot…** (confirm step; disabled
+  while a pilot revision from feedback is still open). Failed cards get a
+  banner with **Retry** / **Retry all** (`/pipeline/retry`); a finished
+  story gets **Download manuscript**.
+- Stage timeline: Records -> Pilot chapter -> Your review -> Chapters ->
+  Review passes -> Final, each with its status and progress. Picking a
+  stage lists its cards: the work, the board card (title + step), the
+  worker status (queued / waiting for a worker / working / blocked / done
+  / failed / card missing), **Open session** (posts
+  `plugin-ui-open-session` so PeckBoard opens the worker's session tab) and
+  **Retry**. Revisions from the owner's feedback are listed under "Your
+  review"; review-pass revisions under "Review passes".
+- Chapter grid: one row per chapter, a cell for the draft and each of the
+  eight review passes (status icon + label + tooltip, never colour alone),
+  plus revising / feedback notes. Any cell or chapter opens the reader.
+- Chapter reader (side drawer): Text (`GET .../chapter?n=N`, rendered
+  from a safe Markdown subset as DOM), Reviews (every round's verdict and
+  notes), Scenes (scene-fact sheets), Feedback, and a feedback box that
+  posts `/pipeline/feedback` (revision card + story rule); the pilot's
+  reader also carries Approve. Esc closes, Tab is trapped, prev/next
+  chapter buttons.
+- Story records tabs: Characters (full sheets, attitudes toward the
+  others, what they know), Emotions & attitudes (emotion per character per
+  chapter; an attitude matrix as of any chapter, carried forward from the
+  sheets, changes highlighted), Who knows what (facts x characters, per
+  route, as of any chapter), Setups & payoffs (promise -> progress ->
+  payoff, filter by status), Choices map (VN: choices per chapter with
+  their consequences, routes/endings and the options that lead there),
+  Glossary (search), Recaps, and Rules & feedback (story rules traced to
+  setup / owner feedback / review, edits and switched-off sections of the
+  built-in style guide, banned words, the full feedback history with each
+  revision's status).
+- Live: store writes arrive as `plugin-ui-event` and refetch `/state`;
+  the board's side of each card (step, blocked, worker session) comes from
+  `GET .../cards` — kept off `/state` because `list_cards` returns every
+  card with its full description — polled every 20 s while the tab is
+  visible and work is open, and soon after any unit changes. Renders keep
+  focus, caret, scroll and the reader's place.
 
 ## Pipeline engine
 
@@ -180,8 +232,9 @@ card's own description.
 ## Status
 
 This is the scaffold (SW-1), the data model, chunked store and worker MCP
-tools (SW-2), the prompt pack (SW-3), the pipeline stage machine (SW-4) and
-the setup wizard (SW-5): manifest, hook/tool dispatch, the six story_*
-tools, the writing-lessons prompt pack with per-stage card templates, the
-card-driven pipeline engine, and the Story tab's setup wizard described
-above. The live pipeline dashboard lands in a later card.
+tools (SW-2), the prompt pack (SW-3), the pipeline stage machine (SW-4),
+the setup wizard (SW-5) and the pipeline dashboard (SW-6): manifest,
+hook/tool dispatch, the six story_* tools, the writing-lessons prompt pack
+with per-stage card templates, the card-driven pipeline engine, and the
+Story tab's wizard and live dashboard described above. Screenshots of the
+dashboard are in `docs/screenshots/sw6/`.

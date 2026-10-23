@@ -347,6 +347,63 @@ describe("dispatch: http.request.authed (project UI routes)", () => {
     expect(JSON.parse(resp.payload.body)).toEqual({ models: [] });
   });
 
+  it("GET chapter returns one chapter's full text, null before it's submitted", () => {
+    setHandlers({ ...docStore().handlers, ...callerScope("proj-1"), ...fileWrites().handlers });
+    invoke("story_submit_chapter", { chapter: 2, markdown: "# Two\n\nMara ran.", recap: "Mara runs." });
+    const get = (query: string) =>
+      JSON.parse(allowPayload(dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/chapter", query })).body);
+    expect(get("n=2").chapter).toMatchObject({ chapter: 2, markdown: "# Two\n\nMara ran.", recap: "Mara runs.", revision: 1 });
+    expect(get("?n=3")).toEqual({ chapter: null });
+    const bad = allowPayload(dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/chapter", query: "n=x" }));
+    expect(bad.status).toBe(400);
+  });
+
+  it("GET cards returns live board status for the pipeline's own cards only, flagging deleted ones", () => {
+    const store = docStore({
+      "engine/proj-1": {
+        stage: "pilot",
+        approved: false,
+        finished: false,
+        units: {
+          pilot: { id: "pilot", kind: "pilot", status: "open", card_id: "c1", attempt: 1, chapter: 1, created_at: "", updated_at: "" },
+          "chapter:2": { id: "chapter:2", kind: "chapter", status: "open", card_id: null, attempt: 1, chapter: 2, created_at: "", updated_at: "" },
+          "chapter:3": { id: "chapter:3", kind: "chapter", status: "open", card_id: "deleted", attempt: 1, chapter: 3, created_at: "", updated_at: "" },
+        },
+        cursors: {},
+        note: null,
+        updated_at: "",
+      },
+    });
+    const listed: any[] = [];
+    setHandlers({
+      ...store.handlers,
+      ...callerScope("proj-1"),
+      peckboard_list_cards: (input: any) => {
+        listed.push(input);
+        return {
+          cards: [
+            { id: "c1", project_id: "proj-1", title: "Pilot", description: "x".repeat(1000), step: "in_progress", blocked: false, block_reason: null, worker_session_id: "s1", last_worker_session_id: null, model: "m", updated_at: "t" },
+            { id: "other", project_id: "proj-1", title: "Unrelated", description: "", step: "backlog", blocked: false, block_reason: null },
+          ],
+        };
+      },
+    });
+    const body = JSON.parse(allowPayload(dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/cards" })).body);
+    expect(listed).toEqual([{ project_id: "proj-1" }]);
+    expect(body.cards).toEqual({
+      c1: { id: "c1", title: "Pilot", step: "in_progress", blocked: false, block_reason: null, worker_session_id: "s1", last_worker_session_id: null, model: "m", updated_at: "t" },
+      deleted: { id: "deleted", missing: true },
+    });
+  });
+
+  it("GET cards skips the card listing when the pipeline owns no cards yet", () => {
+    let calls = 0;
+    setHandlers({ ...docStore().handlers, ...callerScope("proj-1"), peckboard_list_cards: () => (calls++, { cards: [] }) });
+    const body = JSON.parse(allowPayload(dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/cards" })).body);
+    expect(body).toEqual({ cards: {} });
+    expect(calls).toBe(0);
+  });
+
   it("404s an unknown authed path", () => {
     const resp = JSON.parse(
       dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/nope" }),

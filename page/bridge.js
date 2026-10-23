@@ -89,3 +89,9 @@ export function onDataChange(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
+
+/// Ask PeckBoard to open a worker session as a tab (the host validates the
+/// id and navigates; see PluginFullPage.tsx `plugin-ui-open-session`).
+export function openSession(sessionId) {
+  if (typeof sessionId === "string" && sessionId) window.parent.postMessage({ type: "plugin-ui-open-session", sessionId }, "*");
+}

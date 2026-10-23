@@ -76,6 +76,8 @@ export function manifestJson(): string {
       "POST /api/plugin-ui/story-writer/pipeline/feedback",
       "POST /api/plugin-ui/story-writer/pipeline/retry",
       "GET /api/plugin-ui/story-writer/export",
+      "GET /api/plugin-ui/story-writer/cards",
+      "GET /api/plugin-ui/story-writer/chapter",
     ],
 
     settings: [

@@ -8,8 +8,8 @@
 
 import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
-import { listModels, requireProjectId } from "./host";
-import { getAllRecords, getBrief, getCards, getEngine, getFeedback, getPipelineState, listChapters, listReviews, putBrief } from "./docs";
+import { listCards, listModels, requireProjectId } from "./host";
+import { getAllRecords, getBrief, getCards, getChapter, getEngine, getFeedback, getPipelineState, listChapters, listReviews, putBrief } from "./docs";
 import { MAX_CHAPTERS, PipelineConflict, assembleExport, requestApprove, requestFeedback, requestGenerate, requestRetry, requestStart } from "./pipeline";
 import { DEFAULT_BANNED, styleGuide } from "./prompts";
 import { mergeWizardUpdate, normalizeBrief } from "./wizard";
@@ -79,6 +79,12 @@ export function serveAuthed(payload: any): string {
     if (method === "GET" && path === `${API}/export`) {
       return jsonResponse(200, assembleExport(requireProjectId()));
     }
+    if (method === "GET" && path === `${API}/cards`) {
+      return jsonResponse(200, getLiveCards());
+    }
+    if (method === "GET" && path === `${API}/chapter`) {
+      return jsonResponse(200, getChapterText(str(payload?.query)));
+    }
   } catch (e) {
     return jsonResponse(e instanceof PipelineConflict ? 409 : 400, { error: errMsg(e) });
   }
@@ -105,9 +111,8 @@ function pipelineRetry(body: any): any {
 
 function getState(): any {
   const projectId = requireProjectId();
-  // Chapter/review bodies can be large; the dashboard only needs a summary
-  // per chapter (full text is fetched separately when a chapter is opened —
-  // a later card's concern).
+  // Chapter bodies can be large; the dashboard only needs a summary per
+  // chapter (the reader fetches one chapter's text from /chapter).
   const chapters = listChapters(projectId).map((c) => ({
     chapter: c.chapter,
     revision: c.revision,
@@ -127,6 +132,60 @@ function getState(): any {
     feedback: getFeedback(projectId),
     cards: getCards(projectId),
   };
+}
+
+/// Live board status of the pipeline's own cards (step, blocked, worker
+/// session) for the dashboard's worker-status column and "open session"
+/// links. Kept off /state: list_cards returns every card in the project
+/// with its full description, so the page polls this on its own slower
+/// cadence instead of paying for it on every store write. A card the engine
+/// still points at but the board no longer has comes back `missing: true`
+/// (an id absent from the map just means "created after this listing").
+function getLiveCards(): any {
+  const projectId = requireProjectId();
+  const owned = new Set<string>();
+  for (const u of Object.values(getEngine(projectId).units)) if (u.card_id) owned.add(u.card_id);
+  const cards: Record<string, unknown> = {};
+  if (owned.size > 0) {
+    for (const c of listCards(projectId)) {
+      if (!owned.has(c.id)) continue;
+      cards[c.id] = {
+        id: c.id,
+        title: c.title,
+        step: c.step,
+        blocked: !!c.blocked,
+        block_reason: c.block_reason ?? null,
+        worker_session_id: typeof c.worker_session_id === "string" ? c.worker_session_id : null,
+        last_worker_session_id: typeof c.last_worker_session_id === "string" ? c.last_worker_session_id : null,
+        model: c.model ?? null,
+        updated_at: typeof c.updated_at === "string" ? c.updated_at : null,
+      };
+    }
+    for (const id of owned) if (!cards[id]) cards[id] = { id, missing: true };
+  }
+  return { cards };
+}
+
+/// One chapter's full text for the dashboard's reader (`?n=<chapter>`);
+/// `chapter: null` until a worker has submitted it.
+function getChapterText(query: string): any {
+  const projectId = requireProjectId();
+  const raw = queryParam(query, "n");
+  if (raw === null || !/^\d{1,3}$/.test(raw)) throw new Error("n (chapter number) is required");
+  return { chapter: getChapter(projectId, Number(raw)) };
+}
+
+function queryParam(query: string, key: string): string | null {
+  for (const part of query.replace(/^\?/, "").split("&")) {
+    const eq = part.indexOf("=");
+    if ((eq < 0 ? part : part.slice(0, eq)) !== key) continue;
+    try {
+      return decodeURIComponent((eq < 0 ? "" : part.slice(eq + 1)).replace(/\+/g, " "));
+    } catch (_e) {
+      return null;
+    }
+  }
+  return null;
 }
 
 /// Static wizard catalog: the starting brief, the editable built-in style

@@ -551,6 +551,9 @@ function syncCardsMirror(ctx: Ctx): void {
 
 /// The engine owns PipelineState's top-level stage (workers only report
 /// per-stage notes through story_update_state); mirror it after each run.
+/// A failed unit's note replaces the stage note while it's failed and is
+/// dropped again once nothing is (the dashboard shows it as the latest note).
+const RETRY_HINT = " — retry it from the dashboard";
 function syncPipelineStage(ctx: Ctx): void {
   const state = getPipelineState(ctx.projectId);
   const stage = ctx.engine.stage;
@@ -565,7 +568,8 @@ function syncPipelineStage(ctx: Ctx): void {
     changed = true;
   }
   const prior = stages[stage];
-  const note = failed ? `${failed.id}: ${failed.note ?? "failed"} — retry it from the dashboard` : prior?.note;
+  const kept = prior?.note?.endsWith(RETRY_HINT) ? undefined : prior?.note;
+  const note = failed ? `${failed.id}: ${failed.note ?? "failed"}${RETRY_HINT}` : kept;
   if (prior?.status !== status || prior?.note !== note) {
     stages[stage] = { status, note, updated_at: now };
     changed = true;

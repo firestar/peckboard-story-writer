@@ -422,6 +422,9 @@ describe("pipeline engine: models and retry", () => {
 
     state = authed("GET", "/state").body;
     expect(state.engine.units.records.status).toBe("open");
+    // The failure note goes with the failure (the dashboard shows it as the stage's latest note).
+    expect(state.pipeline.stages.records).toMatchObject({ status: "active" });
+    expect(state.pipeline.stages.records.note).toBeUndefined();
     const freshCards = open(cards.cards);
     expect(freshCards).toHaveLength(1);
     expect(freshCards[0].id).not.toBe(recordsCard.id);
