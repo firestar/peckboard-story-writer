@@ -45,14 +45,15 @@ function initials(name) {
 }
 
 /// Lesson markdown as plain preview text, minus a first line that only
-/// repeats the section's title.
+/// repeats the section's title ("5. Choices", "System voice (kept from v1)").
 function plain(md, title) {
   const lines = String(md || "")
     .replace(/^#{1,6}\s+/gm, "")
     .replace(/\*\*/g, "")
     .replace(/`/g, "")
     .split("\n");
-  if (title && lines.length && lines[0].trim().toLowerCase() === title.trim().toLowerCase()) lines.shift();
+  const bare = (s) => s.trim().replace(/^\d+[.)]\s*/, "").replace(/\s*\([^)]*\)$/, "").toLowerCase();
+  if (title && lines.length && bare(lines[0]) === bare(title)) lines.shift();
   while (lines.length && !lines[0].trim()) lines.shift();
   return lines.join("\n");
 }
@@ -80,7 +81,7 @@ export function mountWizard(container, opts) {
   const otherOpen = new Set(); // choice controls showing their "Other…" input
   const collapsed = new Set(); // collapsed character cards
   const editingLessons = new Set();
-  const fieldErrors = {};
+  const fieldErrors = {}; // fid -> { text, raw }: a value that can't be saved as typed
 
   const fmt = () => draft.basics.format;
   const view = (key) => M.elementView(draft, server.engine, key);
@@ -124,8 +125,17 @@ export function mountWizard(container, opts) {
         } else if (changed) render();
         else paintSave();
       } catch (e) {
-        for (const p of paths) dirty.add(p);
         inflight = new Set();
+        if (e && e.status === 409 && opts.onConflict) {
+          // Only a started pipeline refuses a setup save (format and chapter
+          // count are fixed then): another tab or device started it and this
+          // one missed the refresh. Retrying can't succeed — drop the edit
+          // and reload into the pipeline view.
+          e.handled = true;
+          opts.onConflict("The pipeline was started elsewhere, so the setup is read-only now. Your last change wasn't saved.");
+          throw e;
+        }
+        for (const p of paths) dirty.add(p);
         saveError = msg(e);
         paintSave();
         throw e;
@@ -144,6 +154,7 @@ export function mountWizard(container, opts) {
     let text;
     if (readOnly) text = "Read-only";
     else if (saveError) (cls = "error"), (text = "Couldn't save");
+    else if (Object.keys(fieldErrors).length) (cls = "error"), (text = "Fix the marked field to save it");
     else if (inflight.size) (cls = "saving"), (text = "Saving…");
     else if (dirty.size) (cls = "dirty"), (text = "Unsaved changes");
     else if (!hasServerBrief) text = "Not saved yet";
@@ -296,6 +307,9 @@ export function mountWizard(container, opts) {
     } catch (e) {
       confirm = null;
       notice = { tone: "err", text: `Couldn't start the pipeline: ${msg(e)}` };
+      // Started elsewhere, or a gate changed under this tab: refetch so the
+      // page shows where things really stand.
+      if (e && e.status === 409 && !e.handled && opts.onConflict) opts.onConflict(`${notice.text}.`);
     } finally {
       busy.delete("start");
       render();
@@ -336,6 +350,13 @@ export function mountWizard(container, opts) {
     clear(container);
     container.appendChild(build());
     window.scrollTo(0, y);
+    // Narrow layout: the rail is a horizontal strip, rebuilt scrolled to its
+    // start; bring the current step back into view.
+    const strip = container.querySelector(".sw-rail");
+    const cur = strip && strip.querySelector('[aria-current="step"]');
+    if (cur && strip.scrollWidth > strip.clientWidth) {
+      strip.scrollLeft = Math.max(0, cur.offsetLeft - strip.offsetLeft - (strip.clientWidth - cur.offsetWidth) / 2);
+    }
     if (!fid) return;
     const n = container.querySelector(`[data-fid="${attrEscape(fid)}"]`);
     if (!n) return;
@@ -856,6 +877,7 @@ export function mountWizard(container, opts) {
   function chapterInput() {
     const fid = "basics.chapter_count";
     const n = draft.basics.chapter_count;
+    const err = fieldErrors[fid];
     const setN = (v) => {
       draft.basics = { ...draft.basics, chapter_count: v };
       delete fieldErrors[fid];
@@ -866,9 +888,14 @@ export function mountWizard(container, opts) {
       setN(Math.min(maxChapters, Math.max(1, cur + d)));
       render();
     };
-    const paintError = () => {
+    // Typing doesn't re-render (it would steal the caret), so paint the
+    // error, the input's invalid state and the save indicator in place.
+    const paintError = (input) => {
       const node = container.querySelector(`[data-errfor="${fid}"]`);
-      if (node) node.textContent = fieldErrors[fid] || "";
+      if (node) node.textContent = fieldErrors[fid] ? fieldErrors[fid].text : "";
+      if (fieldErrors[fid]) input.setAttribute("aria-invalid", "true");
+      else input.removeAttribute("aria-invalid");
+      paintSave();
     };
     return h(
       "div",
@@ -894,13 +921,16 @@ export function mountWizard(container, opts) {
           inputmode: "numeric",
           dataset: { fid },
           disabled: readOnly,
-          value: String(n),
+          // Keep what the owner typed (and its error) across re-renders.
+          value: err ? err.raw : String(n),
+          "aria-invalid": err ? "true" : null,
+          "aria-describedby": "f-chapters-err",
           oninput: (e) => {
             const raw = e.target.value.trim();
             const v = Number(raw);
             if (raw !== "" && Number.isInteger(v) && v >= 1 && v <= maxChapters) setN(v);
-            else fieldErrors[fid] = `Enter a whole number from 1 to ${maxChapters}.`;
-            paintError();
+            else fieldErrors[fid] = { text: `Enter a whole number from 1 to ${maxChapters}.`, raw };
+            paintError(e.target);
           },
         }),
         h("button", {
@@ -912,7 +942,7 @@ export function mountWizard(container, opts) {
           onclick: () => bump(1),
         }),
       ),
-      h("span", { class: "sw-field-error", role: "alert", dataset: { errfor: fid } }, fieldErrors[fid] || ""),
+      h("span", { id: "f-chapters-err", class: "sw-field-error", role: "alert", dataset: { errfor: fid } }, err ? err.text : ""),
     );
   }
 
@@ -1444,6 +1474,18 @@ export function mountWizard(container, opts) {
       const c = M.findCharacter(chars, r);
       return c ? c.name.trim() || "Unnamed character" : r || "?";
     };
+    // An AI draft can name someone who isn't in the cast; the select only
+    // says so inside its (often truncated) option text, so spell it out.
+    const missingNote = (r) => {
+      const missing = [r.a, r.b].filter((x) => x && !M.findCharacter(chars, x));
+      if (missing.length === 0) return null;
+      return h(
+        "p",
+        { class: "sw-rel-warn" },
+        h("span", { html: ICON.alert, "aria-hidden": "true" }),
+        `${missing.join(" and ")} ${missing.length === 1 ? "isn't" : "aren't"} in Characters. Add them on the Characters step, or pick someone from the cast.`,
+      );
+    };
     const add = () => {
       const list = M.normalizeRelationships(draft.elements.relationships);
       const r = M.newRelationship(list);
@@ -1490,6 +1532,7 @@ export function mountWizard(container, opts) {
                   "aria-label": "Relationship description",
                   oninput: (e) => edit(r.id, { description: e.target.value }, true),
                 }),
+                missingNote(r),
               ),
             ),
           ),

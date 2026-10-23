@@ -68,6 +68,12 @@ function route() {
       readOnly,
       P,
       refresh,
+      // A write refused with 409 means this tab is behind (usually: the
+      // pipeline started elsewhere). Refetch, re-route, then say why.
+      onConflict: (text) =>
+        refresh().then(() => {
+          if (view) view.ctrl.notify(text, "warn");
+        }),
       onClose: readOnly
         ? () => {
             showSetup = false;

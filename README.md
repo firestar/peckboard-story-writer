@@ -117,7 +117,8 @@ light/dark tokens, `?theme=` or `prefers-color-scheme`).
   need, lie/wound/ghost, one speech habit, initial emotion, a starting
   attitude + reason toward every other character, what they know).
   Relationships pick both sides from the character list; AI drafts that
-  refer to characters by name are matched, unknown names are flagged.
+  refer to characters by name are matched; a name that isn't in the cast
+  is flagged in the dropdown and with a note under the row.
 - Style rules: the built-in style guide (style v2 blocks, English rules,
   and for VN the choice-label and system-voice sections) shown per section
   with Edit / Turn off / Reset (`lesson_overrides`), plus the story's own
@@ -134,6 +135,31 @@ light/dark tokens, `?theme=` or `prefers-color-scheme`).
   typing or moving focus.
 - `GET .../defaults` supplies the starting brief, the editable style
   guide, the built-in banned words and the chapter cap.
+- Validation: an out-of-range or non-integer chapter count is marked on
+  the field (`aria-invalid` + an alert) and never saved — the typed value
+  and its error survive re-renders, and the save indicator reads "Fix the
+  marked field to save it" until it's fixed. Review & start lists every
+  blocker as a link to its step and keeps **Start pipeline…** disabled
+  until none are left.
+- Once the pipeline has started, format and chapter count are fixed:
+  `POST /wizard` answers 409 if either changes. A tab that missed the start
+  (started from another tab or device) gets that 409 on its next save, or
+  "pipeline already started" on Start, and reloads into the pipeline view
+  with a notice instead of offering a retry that can't succeed.
+
+Screenshots (Playwright, local PeckBoard with the plugin installed):
+[story idea](docs/screenshots/wizard-story-idea.png),
+[basics with a chapter-count error](docs/screenshots/wizard-basics-chapter-error.png),
+[who writes what](docs/screenshots/wizard-who-writes-what.png),
+[premise AI draft to review](docs/screenshots/wizard-premise-ai-draft.png),
+[characters](docs/screenshots/wizard-characters.png),
+[relationships naming someone not in the cast](docs/screenshots/wizard-relationships-missing-character.png),
+[style rules with an edited section](docs/screenshots/wizard-style-rules.png),
+[review blockers](docs/screenshots/wizard-review-blockers.png),
+[start confirmation](docs/screenshots/wizard-start-confirm.png),
+[a stale tab after the 409](docs/screenshots/wizard-stale-tab-409.png),
+[read-only setup after start](docs/screenshots/wizard-setup-read-only.png),
+[dark theme at 420 px](docs/screenshots/wizard-dark-mobile.png).
 
 ## Pipeline dashboard (Story tab, once started)
 
@@ -236,8 +262,9 @@ tools (SW-2), the prompt pack (SW-3), the pipeline stage machine (SW-4),
 the setup wizard (SW-5) and the pipeline dashboard (SW-6): manifest,
 hook/tool dispatch, the six story_* tools, the writing-lessons prompt pack
 with per-stage card templates, the card-driven pipeline engine, and the
-Story tab's wizard and live dashboard described above. Screenshots of the
-dashboard (Playwright, local PeckBoard with the plugin installed) are
+Story tab's wizard and live dashboard described above. Screenshots
+(Playwright, local PeckBoard with the plugin installed) are
+`docs/screenshots/wizard-*.png` (listed under Setup wizard) and
 `docs/screenshots/dashboard-*.png` — e.g.
 [the owner gate](docs/screenshots/dashboard-pilot-gate.png),
 [the chapter grid](docs/screenshots/dashboard-chapter-grid.png),
