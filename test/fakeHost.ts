@@ -130,3 +130,82 @@ export function fileWrites(): {
     },
   };
 }
+
+/// A fake card, shaped like `src/host.ts`'s `Card`.
+export interface FakeCard {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  step: string;
+  priority: number;
+  workflow: string;
+  model: string | null;
+  effort: string | null;
+  blocked: boolean;
+  block_reason: string | null;
+}
+
+let fakeCardSeq = 0;
+
+/// Host functions for `peckboard_list_cards` / `peckboard_create_card` /
+/// `peckboard_update_card`, backed by a plain array. `setStep` is a test
+/// shorthand for simulating a worker/human moving a card to `done` or
+/// `wont_do` before firing the matching `card.step.after` event.
+export function fakeCards(seed: FakeCard[] = []): {
+  cards: FakeCard[];
+  setStep: (id: string, step: string) => void;
+  handlers: Record<string, (input: any) => unknown>;
+} {
+  const cards: FakeCard[] = seed.slice();
+  const setStep = (id: string, step: string): void => {
+    const card = cards.find((c) => c.id === id);
+    if (card) card.step = step;
+  };
+  return {
+    cards,
+    setStep,
+    handlers: {
+      peckboard_list_cards: ({ project_id, step }: any) => ({
+        cards: cards.filter((c) => (!project_id || c.project_id === project_id) && (!step || c.step === step)),
+      }),
+      peckboard_create_card: (input: any) => {
+        if (!input?.title || !String(input.title).trim()) return { error: "title is required" };
+        const card: FakeCard = {
+          id: `card-${++fakeCardSeq}`,
+          project_id: input.project_id,
+          title: input.title,
+          description: input.description ?? "",
+          step: input.step ?? "backlog",
+          priority: input.priority ?? 2,
+          workflow: input.workflow ?? "task",
+          model: input.model ?? null,
+          effort: input.effort ?? null,
+          blocked: input.blocked ?? !!input.block_reason,
+          block_reason: input.block_reason ?? null,
+        };
+        cards.push(card);
+        return { card };
+      },
+      peckboard_update_card: (input: any) => {
+        const card = cards.find((c) => c.id === input.card_id);
+        if (!card) return { error: "card not found" };
+        if (input.description !== undefined) card.description = input.description;
+        if (input.step !== undefined) card.step = input.step;
+        if (input.priority !== undefined) card.priority = input.priority;
+        if (input.model !== undefined) card.model = input.model;
+        if (input.blocked !== undefined) card.blocked = input.blocked;
+        if (input.block_reason !== undefined) card.block_reason = input.block_reason;
+        return { card };
+      },
+    },
+  };
+}
+
+/// Host function for `peckboard_get_plugin_setting`, backed by a plain
+/// key -> value map.
+export function pluginSettings(values: Record<string, unknown> = {}): Record<string, (input: any) => unknown> {
+  return {
+    peckboard_get_plugin_setting: ({ key }: any) => ({ value: values[key] ?? null }),
+  };
+}

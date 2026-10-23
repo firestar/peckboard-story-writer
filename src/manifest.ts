@@ -71,6 +71,12 @@ export function manifestJson(): string {
       "GET /api/plugin-ui/story-writer/state",
       "GET /api/plugin-ui/story-writer/models",
       "POST /api/plugin-ui/story-writer/wizard",
+      "POST /api/plugin-ui/story-writer/pipeline/generate",
+      "POST /api/plugin-ui/story-writer/pipeline/start",
+      "POST /api/plugin-ui/story-writer/pipeline/approve",
+      "POST /api/plugin-ui/story-writer/pipeline/feedback",
+      "POST /api/plugin-ui/story-writer/pipeline/retry",
+      "GET /api/plugin-ui/story-writer/export",
     ],
 
     settings: [

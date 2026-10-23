@@ -8,14 +8,17 @@ import {
   Brief,
   CardRef,
   ChapterDoc,
+  EngineState,
   Feedback,
   RECORD_ID_KEY,
   RECORD_REQUIRED_FIELDS,
   RECORD_SECTIONS,
   Records,
   RecordSection,
+  PipelineState,
   ReviewDoc,
   ReviewPass,
+  defaultEngineState,
   defaultPipelineState,
   emptyRecords,
   nowIso,
@@ -158,6 +161,24 @@ export function getCards(projectId: string): CardRef[] {
 
 export function putCards(projectId: string, cards: CardRef[]): void {
   putDoc("cards", projectId, cards);
+}
+
+// ── Pipeline engine state (one doc per project) ───────────────────────────
+
+export function getEngine(projectId: string): EngineState {
+  return (getDoc("engine", projectId) as EngineState | null) ?? defaultEngineState();
+}
+
+export function putEngine(projectId: string, state: EngineState): void {
+  putDoc("engine", projectId, state);
+}
+
+/// Every project id with an engine doc. `card.step.after` already knows its
+/// project from the payload; `timer.tick`'s safety net has no project
+/// context at all, so it iterates this to find every pipeline it should
+/// nudge forward.
+export function listEngineProjects(): string[] {
+  return listDocs("engine").map((d) => d.key);
 }
 
 // ── Feedback (one doc per project holding the append-only list) ──────────

@@ -334,10 +334,76 @@ export function defaultPipelineState(): PipelineState {
 export interface CardRef {
   card_id: string;
   stage: StageId;
-  kind: string;
+  kind: UnitKind;
   chapter?: number;
   pass?: ReviewPass;
+  element?: ElementKey;
+  status?: UnitStatus;
   created_at: string;
+  updated_at?: string;
+}
+
+// ── Pipeline engine ──────────────────────────────────────────────────────
+
+/// The six kinds of pipeline card the engine creates. Same literal values
+/// as `prompts.StageKind` (kept separate so types.ts doesn't depend on the
+/// prompts module) — a Unit's `kind` is always a valid `renderCard` input.
+export const UNIT_KINDS = ["records", "pilot", "chapter", "review", "revision", "generate"] as const;
+export type UnitKind = (typeof UNIT_KINDS)[number];
+
+export type UnitStatus = "open" | "done" | "failed";
+
+/// One unit of pipeline work, mapped to at most one open board card at a
+/// time. `id` is a stable key (e.g. "records", "chapter:3",
+/// "review:2:line") the engine never reuses for different work — a retry
+/// resets this same record in place (bumping `attempt`, clearing
+/// `card_id`) rather than minting a new id, so "does this unit already
+/// have a card" is always a single lookup.
+export interface Unit {
+  id: string;
+  kind: UnitKind;
+  status: UnitStatus;
+  card_id: string | null;
+  attempt: number;
+  chapter?: number;
+  pass?: ReviewPass;
+  element?: ElementKey;
+  note?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const MAX_REVIEW_ROUNDS = 2;
+
+/// Where one chapter's structure->character->...->sentence-shape review
+/// chain currently stands.
+export interface ReviewCursor {
+  chapter: number;
+  pass_index: number; // index into REVIEW_PASSES
+  round: number; // attempt at the current pass, 1-based, capped at MAX_REVIEW_ROUNDS
+  waiting: "review" | "revision" | "done";
+}
+
+export interface EngineState {
+  stage: StageId;
+  approved: boolean; // owner approved the pilot
+  finished: boolean;
+  units: Record<string, Unit>;
+  cursors: Record<string, ReviewCursor>; // keyed by chapter number (as a string)
+  note: string | null;
+  updated_at: string;
+}
+
+export function defaultEngineState(): EngineState {
+  return {
+    stage: "setup",
+    approved: false,
+    finished: false,
+    units: {},
+    cursors: {},
+    note: null,
+    updated_at: new Date(0).toISOString(),
+  };
 }
 
 // ── Feedback ─────────────────────────────────────────────────────────────

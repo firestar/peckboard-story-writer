@@ -9,7 +9,8 @@
 import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
 import { listModels, requireProjectId } from "./host";
-import { getAllRecords, getBrief, getCards, getFeedback, getPipelineState, listChapters, listReviews, putBrief } from "./docs";
+import { getAllRecords, getBrief, getCards, getEngine, getFeedback, getPipelineState, listChapters, listReviews, putBrief } from "./docs";
+import { assembleExport, requestApprove, requestFeedback, requestGenerate, requestRetry, requestStart } from "./pipeline";
 import { Brief } from "./types";
 
 const PAGE_PATH = "/plugin-api/v1/story-writer";
@@ -55,10 +56,46 @@ export function serveAuthed(payload: any): string {
       const b = parseBody(body);
       return jsonResponse(200, saveWizard(b));
     }
+    if (method === "POST" && path === `${API}/pipeline/generate`) {
+      return jsonResponse(200, pipelineGenerate(parseBody(body)));
+    }
+    if (method === "POST" && path === `${API}/pipeline/start`) {
+      return jsonResponse(200, requestStart(requireProjectId()));
+    }
+    if (method === "POST" && path === `${API}/pipeline/approve`) {
+      return jsonResponse(200, requestApprove(requireProjectId()));
+    }
+    if (method === "POST" && path === `${API}/pipeline/feedback`) {
+      return jsonResponse(200, pipelineFeedback(parseBody(body)));
+    }
+    if (method === "POST" && path === `${API}/pipeline/retry`) {
+      return jsonResponse(200, pipelineRetry(parseBody(body)));
+    }
+    if (method === "GET" && path === `${API}/export`) {
+      return jsonResponse(200, assembleExport(requireProjectId()));
+    }
   } catch (e) {
     return jsonResponse(400, { error: errMsg(e) });
   }
   return jsonResponse(404, { error: "not found" });
+}
+
+function pipelineGenerate(body: any): any {
+  const projectId = requireProjectId();
+  const elements = Array.isArray(body?.elements) ? body.elements : undefined;
+  return requestGenerate(projectId, elements);
+}
+
+function pipelineFeedback(body: any): any {
+  const projectId = requireProjectId();
+  const chapter = typeof body?.chapter === "number" ? body.chapter : undefined;
+  return requestFeedback(projectId, chapter, str(body?.text));
+}
+
+function pipelineRetry(body: any): any {
+  const projectId = requireProjectId();
+  const unit = typeof body?.unit === "string" ? body.unit : undefined;
+  return requestRetry(projectId, unit);
 }
 
 function getState(): any {
@@ -77,6 +114,7 @@ function getState(): any {
     project_id: projectId,
     brief: getBrief(projectId),
     records: getAllRecords(projectId),
+    engine: getEngine(projectId),
     pipeline: getPipelineState(projectId),
     chapters,
     reviews: listReviews(projectId),

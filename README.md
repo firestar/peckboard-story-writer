@@ -93,12 +93,43 @@ sudo bash install.sh
   (empty string omits the section) to `renderCard`/`renderLessons` (any id) or
   `promptPack` (top-level ids only).
 
+## Pipeline engine
+
+`src/pipeline.ts` drives the stage machine: setup -> records -> pilot ->
+pilot_review -> chapters -> review -> final. It owns one `EngineState` doc
+per project (collection `"engine"`), keyed by stable unit ids (`"records"`,
+`"chapter:3"`, `"review:2:line"`, ...) each mapped to at most one open board
+card — the engine never creates a second card for the same id; a retry
+resets the unit in place (new attempt, same id) rather than minting a new
+one, and a card whose creation call succeeded but whose id got lost before
+it was persisted is recovered by matching a hidden `story-writer:unit=...`
+marker in the card's own description.
+
+- `card.step.after` re-runs the engine for the card's project whenever one
+  of its cards reaches `done`/`wont_do`; `timer.tick` is the safety net,
+  sweeping every project with a running pipeline every ~30s.
+- Parallel chapter cards (2..N) are created blocked as soon as the pilot
+  starts, so they're visible before the owner approves it.
+- `POST .../pipeline/{generate,start,approve,feedback,retry}` and
+  `GET .../export` (src/http.ts) are the owner/wizard actions: queue
+  AI-generate-element cards, start the pipeline (gated on every
+  draft/generate element being owner-approved), approve the pilot (unblocks
+  the queued chapter cards), leave feedback on the pilot or any chapter
+  (recorded, appended to style_rules, turned into a revision card), retry a
+  failed unit, and assemble the final manuscript.
+- Each review pass allows up to `MAX_REVIEW_ROUNDS` (2) attempts
+  (`changes_requested` -> a revision card -> the same pass again) before
+  moving on regardless, so one stubborn pass can't stall a chapter forever.
+- Every run is budgeted (a wall-clock deadline plus a max-creates-per-call
+  cap) so one hook call can never create an unbounded number of cards or
+  run past `call_timeout_secs`; whatever doesn't fit resumes on the next
+  event or tick.
+
 ## Status
 
 This is the scaffold (SW-1), the data model, chunked store and worker MCP
-tools (SW-2), and the prompt pack (SW-3): manifest, hook/tool dispatch, the
-Story tab page shell, the six story_* tools, and the writing-lessons prompt
-pack with per-stage card templates. The setup wizard's full UI and the
-pipeline's card-driven stage machine (`card.step.after` / `timer.tick`, which
-will call `renderCard` to build each stage's card) land in later cards —
-`src/pipeline.ts` is currently a no-op stub.
+tools (SW-2), the prompt pack (SW-3), and the pipeline stage machine
+(SW-4): manifest, hook/tool dispatch, the Story tab page shell, the six
+story_* tools, the writing-lessons prompt pack with per-stage card
+templates, and the card-driven pipeline engine described above. The setup
+wizard's full UI and the live pipeline dashboard land in later cards.
