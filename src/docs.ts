@@ -12,7 +12,6 @@ import {
   RECORD_ID_KEY,
   RECORD_REQUIRED_FIELDS,
   RECORD_SECTIONS,
-  RECORD_SECTIONS,
   Records,
   RecordSection,
   ReviewDoc,
