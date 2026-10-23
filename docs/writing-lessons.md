@@ -31,13 +31,26 @@ project, and paste the relevant parts into every writing card.
    to hit the number.
 9. **Quote real bad lines in instructions.** "Make it flow" does nothing; "this line is wrong
    because…" works. Every card should carry the owner's own words and concrete examples.
-10. **Model routing:** story/dialogue/prose is written by Codex GPT-5.6 Sol (owner finds Claude's
-    creative writing wordy). Claude does site, Playwright, staging and code. If Sol's output keeps
-    failing review, try a different model for the review/English pass as a second opinion.
+10. **Model routing: judge by a played pilot, not more rules.** The owner rejected four passes
+    written by Codex GPT-5.6 Sol ("plain ugly": "I play her message before I can revise that
+    decision."). Judge any writer model by a pilot chapter the owner actually plays, and switch
+    models when a pilot fails instead of adding more rules. Default writer is now Claude Opus 5.5
+    (`claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333`); writer and reviewer models
+    stay plugin settings.
 11. **Pilot chapter first, then fan out.** We sent all seven chapters out in parallel three times
     (RW, RW2, LE) and the owner only saw the problems afterwards. Write chapter 1 alone (plus its
     story-memory records), have the owner read and approve it, fold the feedback into this doc and
     the style guide, and only then write the other chapters in parallel.
+12. **Cold read every chapter (C1).** Before a chapter reaches the owner gate or review, a fresh
+    reviewer session reads only the chapter text plus chapters 1..N−1 as a player would see them —
+    no records, synopsis, bible, cards or worker output — and reports every point of confusion plus
+    the characters in order of first appearance with what the text said about them. A fix card
+    then fixes every item (C2: confusion is the text's fault, not the reader's) and records
+    item→fix.
+13. **Build the introduction records up front.** Character records carry each character's
+    first-introduction scene and exact introduction line; keep a per-scene list of unexplained
+    names, terms and rules (C3) and answer each one in time. Every review pass checks every first
+    mention.
 
 ## 1A. Story memory: characters, knowledge, continuity, setting
 
@@ -53,6 +66,8 @@ For every character, defined up front:
 - **Starting emotional state** and **starting attitude toward every other character** (trust,
   affection, fear, resentment, debt…), with the reason for each.
 - **What they know** at the start: about the lead, the world, the secrets.
+- **First introduction:** the scene where they first appear on the page, and the exact line that
+  introduces them (see 1D, "Introduce every character").
 
 ### Per-chapter character state
 
@@ -291,6 +306,111 @@ Researched 2026-10-23 (craft books, writing teachers, interactive-fiction design
   (a weapon in use, a clue, a payoff object). Otherwise don't mention them at all. This is not a
   licence for texture details.
 
+## 1D. Introducing characters and the reader's point of view
+
+Owner: "always take into account the reader's POV while reading, and do not assume the reader can
+magic knowledge into existence." Researched 2026-10-23 (Mythcreants, K.M. Weiland, Jane Friedman,
+Les Edgerton, TV Tropes). Owner-approved.
+
+### Introduce every character
+
+Owner: "who is nadia? maybe we need to define our characters and not assume the reader knows who
+random new characters are." (Nadia first appeared as a name on a voicemail with nothing saying she
+is the narrator's sister.)
+
+- The first time a character is named, in narration or dialogue, the reader learns in that same
+  line or the next who they are to the lead (relationship or role: "my sister Nadia", "Teo Brandt,
+  my crew chief") plus one thing that makes them matter right now.
+- Don't name anyone the reader hasn't met unless the line also says who they are — including
+  names in voicemails, signs, news reports and other characters' dialogue.
+- First time on screen: a short physical or behavioural impression in the lead's voice, one or two
+  details, not an inventory.
+- Reintroduce briefly after an absence of a chapter or more: who they are and where we last saw
+  them.
+
+### Openings
+
+Owner: "starting a book with 'by the time' sounds dumb."
+
+- The first line of the book and of every chapter must hook: a person, a tension or a question on
+  the page right away.
+- Banned openers: "By the time…", waking up, alarms, weather, "It was a … day", time of day as the
+  subject, getting dressed, mirror descriptions, dreams, backstory summaries.
+- Open on the lead doing or wanting something that matters, with the situation clear within the
+  first few lines.
+
+### Opening craft (O1–O6, X1)
+
+- **O1. Open on one urgent problem:** the main character and one urgent, personal problem you
+  could sum up in a sentence; backstory behind it comes later. (Chris Winkle, Mythcreants,
+  "Planning Your Story's Opening Passages")
+- **O2. In medias res means clear, not just mid-action:** the middle of a developing situation,
+  not necessarily a fight; never leave the reader unsure who, where or what's going on. (Weiland,
+  "7 Tips for Opening Your Story In Medias Res"; TV Tropes "Lost in Medias Res")
+- **O3. Five things an opening carries:** the main character, the tone, a signal of the world, a
+  hint of what's coming, and conflict; know which one you're skipping and why. (Rachel Meyer,
+  Mythcreants, "Five Essentials for an Opening Scene")
+- **O4. The tone promise:** the opening makes a tone promise the book keeps.
+- **O5. Protagonist + situation + open question:** a strong first line gives all three (Sanderson,
+  *Elantris*: "Prince Raoden of Arelon awoke early that morning, completely unaware that he had
+  been damned for all eternity." — the hook is the damnation; the ban on waking openers stands).
+- **O6. Care before action:** readers must care who someone is before they care what happens to
+  them; action before that is choreography. (Weiland)
+- **X1. No backstory in the hook (owner decision):** no backstory in the first line or first
+  paragraph; after the hook, two or three lines of backstory are allowed only if what follows
+  depends on them.
+
+### What the reader knows (K1–K10)
+
+- **K1. Confusion is an information-rate problem:** the reader knows only what's on the page;
+  confusion comes from too much new information at once, not careless reading. (Winkle, "Seven
+  Ways to Clarify Critical Information")
+- **K2. One new element at a time:** give room to absorb it before the next. (Becca Puglisi,
+  Mythcreants, "Introducing Otherworldly Elements Without Confusing Readers")
+- **K3. Show a term in use:** not defined up front — but it must be understandable from that
+  context.
+- **K4. Ask what the reader needs:** not what you know.
+- **K5. Put important facts where they land:** main clause, short sentence, start or end of a
+  paragraph; never buried mid-sentence.
+- **K6. Two new names per paragraph, max:** every he/she/it needs an obvious owner.
+- **K7. A name dropped before its referent is confusion:** not characterisation. (Winkle, "Lessons
+  From the Exposition of Crescent City")
+- **K8. Anything unusual about a character belongs in their introduction:** not sprung later.
+- **K9. Signs of the world come through action:** never as a tour.
+- **K10. Match the rate of new information to how much is new:** the stranger the world, the
+  slower and clearer.
+
+### Mystery vs confusion (M1–M2)
+
+- **M1. A mystery is a question the reader can put into words:** ("who sent the letter?");
+  confusion is when they can't form the question. Withhold explanations, never orientation.
+  (Winkle, "The Keys to a Great Opening Scene")
+- **M2. Present tense has no "little did I know":** hint at what's coming through details the
+  lead notices and can't explain.
+
+### Checking from the reader's side (C1–C3)
+
+- **C1. Cold-read pass for every chapter:** see the pipeline's cold-read stage. (Winkle, "A
+  Complete Guide to Beta Reading": read once, cold, zero priming.)
+- **C2. When a reader is confused, the text is at fault:** fix emphasis or load, don't argue it
+  was "right there".
+- **C3. Per-scene list of unexplained names, terms and rules:** each is a question the reader
+  carries — cap them and answer them in time.
+
+### Visual-novel specific (V1–V2)
+
+- **V1. Narrator first:** the narrator's name and situation come on the first screens, before any
+  other character is named.
+- **V2. A name plate is an introduction:** the line just before or after a character's first name
+  plate says who they are to the narrator.
+
+### Stating feelings (X2)
+
+- **X2. Narration states feelings briefly (owner decision):** craft sources prefer feelings
+  inferred from action. Our rule stands: narration states what the lead feels and why, in one
+  short line tied to the problem in front of them — never a long inner monologue or backstory
+  dump.
+
 ## 2. What went wrong with the first style (v1, rejected as "garbage")
 
 v1 was a minimalist literary ruleset. Each rule caused a visible failure:
@@ -452,5 +572,6 @@ Every writing card should include: the owner's own words, the relevant sections 
 (character sheets, per-chapter character state and knowledge, chapter recap, setup/payoff list,
 glossary), the whole-chapter process (fact sheet + look at each scene's background and sprites →
 write scenes → full read → fix → re-read until clean), the mechanical preservation list, and a
-follow-up whole-novel review card plus a republish card. Order: pilot chapter → owner approval →
-remaining chapters in parallel → whole-novel review → republish.
+follow-up whole-novel review card plus a republish card. Order: pilot chapter → cold read → fix →
+owner approval → remaining chapters in parallel (each: write → cold read → fix) → whole-novel
+review → republish.

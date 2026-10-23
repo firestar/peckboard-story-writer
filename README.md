@@ -59,6 +59,11 @@ sudo bash install.sh
 | `writer_model` | Model assigned to pilot-chapter and chapter-drafting cards. |
 | `reviewer_model` | Model assigned to the structure/character/pacing/line/copyedit review-pass cards. |
 
+Both default to Claude Opus 5.5
+(`claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333`) — the owner rejected GPT-5.6 Sol's
+prose. Judge any writer model by a pilot chapter the owner actually plays; switch models when a
+pilot fails rather than adding more rules.
+
 ## Prompt pack
 
 `src/prompts/` compiles the built-in writing craft into card templates:
@@ -74,6 +79,15 @@ sudo bash install.sh
   `owner.A`..`owner.E`, `style.*`, `english.*`, `choices`, `system-voice`,
   `mechanical`, `card-template`). An unmapped heading throws, so re-vendoring
   a changed doc fails loudly instead of silently dropping a section.
+- `src/prompts/lessons.ts` also parses `## 1D` (introductions, openings, the reader's point of
+  view) into `reader.*` ids — `reader.intro`, named subsections (`reader.openings`,
+  `reader.checking`, ...) and coded items (`reader.O1`..`reader.X1`, `reader.K1`..`reader.K10`,
+  `reader.M1`..`reader.M2`, `reader.C1`..`reader.C3`, `reader.V1`..`reader.V2`, `reader.X2`).
+- `src/prompts/coldRead.ts` has the two cold-read templates, deliberately outside the
+  `StageKind`/`renderCard` dispatcher: `renderColdReadCard` (a FRESH reviewer — no brief, no
+  records, no rules, no feedback; only the chapter text via `story_cold_read_get_text`) and
+  `renderColdReadFixCard` (the writer, with full context, fixing every item and recording
+  item→fix). Wiring these into the live pipeline per chapter is SW-9.
 - `src/prompts/contract.ts` has the "pull context / push results through
   story_* tools" text each card gets, per stage. Generate cards push their
   draft as `story_update_state {stage:"setup", data:{"draft_<element>": value}}`

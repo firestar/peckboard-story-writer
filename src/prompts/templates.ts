@@ -110,22 +110,22 @@ export const DEFAULT_BANNED = [
   "boundaries of",
 ];
 
-const DISCLAIMER =
+export const DISCLAIMER =
   "> Default lessons below were learned on an earlier visual novel; their examples quote that story " +
   "(Elin, Nadia, the Vein). Follow the rules, not the examples' content. Where this story's brief or " +
   "story rules differ (POV, tense, format, spelling, tone), the brief and story rules win.";
 
-function clip(v: unknown, n: number): string {
+export function clip(v: unknown, n: number): string {
   const s = typeof v === "string" ? v : JSON.stringify(v) ?? "";
   const t = s.trim();
   return t.length <= n ? t : t.slice(0, Math.max(0, n - 1)) + "…";
 }
 
-function formatOf(brief: PromptBrief | null): Format {
+export function formatOf(brief: PromptBrief | null): Format {
   return brief?.basics?.format === "vn" ? "vn" : "prose";
 }
 
-function briefSection(brief: PromptBrief | null): string {
+export function briefSection(brief: PromptBrief | null): string {
   if (!brief) {
     return "## Brief\n\n(brief not set yet — use story_get_brief)";
   }
@@ -153,7 +153,7 @@ function storyRules(brief: PromptBrief | null): string[] {
 /// `keep` caps how many story rules are listed (the rest are noted, not
 /// lost: story_get_brief has them all) — used only when the card would
 /// otherwise exceed MAX_DESCRIPTION_CHARS.
-function rulesSection(brief: PromptBrief | null, keep = Infinity): string {
+export function rulesSection(brief: PromptBrief | null, keep = Infinity): string {
   const rules = storyRules(brief);
   const bannedWords = Array.isArray(brief?.elements?.banned_words) ? (brief!.elements!.banned_words as unknown[]).map(String) : [];
   const seen = new Set<string>();
@@ -234,6 +234,13 @@ export function lessonsFor(kind: StageKind, input: { chapter?: number; pass?: st
     "choices",
     "system-voice",
     "mechanical",
+    "reader.intro-characters",
+    "reader.openings",
+    "reader.opening-craft",
+    "reader.reader-knows",
+    "reader.mystery",
+    "reader.vn",
+    "reader.feelings",
   ];
 
   switch (kind) {
@@ -256,6 +263,8 @@ export function lessonsFor(kind: StageKind, input: { chapter?: number; pass?: st
         "research.branching",
         "research.20",
         "research.36",
+        "reader.intro-characters",
+        "reader.checking",
       ];
     case "pilot":
       return ["process.1", "process.11", ...chapterIds];
@@ -276,6 +285,8 @@ export function lessonsFor(kind: StageKind, input: { chapter?: number; pass?: st
           "craft.choices",
           "research.branching",
           "memory.continuity",
+          "reader.openings",
+          "reader.checking",
         ],
         character: [
           "memory.character-sheets",
@@ -287,6 +298,7 @@ export function lessonsFor(kind: StageKind, input: { chapter?: number; pass?: st
           "owner.A",
           "craft.pov",
           "style.dialogue",
+          "reader.intro-characters",
         ],
         pacing: [
           "craft.box-pacing",
@@ -300,7 +312,7 @@ export function lessonsFor(kind: StageKind, input: { chapter?: number; pass?: st
           "owner.B",
           "memory.continuity",
         ],
-        line: [...H3_STYLE_IDS, "style-v1", "research.prose", "research.11", "research.12", "research.13", "owner.E", "english.intro", "english.conciseness", "english.variety"],
+        line: [...H3_STYLE_IDS, "style-v1", "research.prose", "research.11", "research.12", "research.13", "owner.E", "english.intro", "english.conciseness", "english.variety", "reader.reader-knows"],
         copyedit: ["english.intro", "english.grammar", "research.30", "choices", "system-voice", "mechanical"],
         "ai-tell": ["research.ai", "research.15", "research.12", "style.humour", "english.conciseness"],
         "echo-word": ["research.18", "english.intro", "english.conciseness"],
@@ -329,7 +341,7 @@ export function lessonsFor(kind: StageKind, input: { chapter?: number; pass?: st
         premise: ["research.6", "research.21", "craft.escalation", "style.voice"],
         plot_outline: ["process.2", "research.structure", "research.tension", "research.36", "craft.setup-payoff", "craft.escalation", "research.branching"],
         setting: ["craft.exposition", "memory.setting", "owner.E"],
-        characters: ["memory.character-sheets", "research.character", "style.dialogue", "owner.A"],
+        characters: ["memory.character-sheets", "research.character", "style.dialogue", "owner.A", "reader.intro-characters"],
         relationships: ["research.10", "research.14", "memory.attitudes"],
         themes: ["research.6", "research.7"],
         endings: ["craft.choices", "research.branching", "owner.C", "owner.D", ...(input.format === "prose" ? ["research.structure"] : [])],

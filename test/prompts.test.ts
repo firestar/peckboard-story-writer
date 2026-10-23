@@ -49,7 +49,7 @@ const FEEDBACK: PromptFeedback[] = [
 const ALL_IDS = [
   "intro",
   "process",
-  ...Array.from({ length: 11 }, (_, i) => `process.${i + 1}`),
+  ...Array.from({ length: 13 }, (_, i) => `process.${i + 1}`),
   "memory",
   "memory.intro",
   "memory.character-sheets",
@@ -80,6 +80,26 @@ const ALL_IDS = [
   "research.ai",
   "research.owner",
   ...Array.from({ length: 36 }, (_, i) => `research.${i + 1}`),
+  "reader",
+  "reader.intro",
+  "reader.intro-characters",
+  "reader.openings",
+  "reader.opening-craft",
+  "reader.reader-knows",
+  "reader.mystery",
+  "reader.checking",
+  "reader.vn",
+  "reader.feelings",
+  ...["O1", "O2", "O3", "O4", "O5", "O6", "X1"].map((c) => `reader.${c}`),
+  ...Array.from({ length: 10 }, (_, i) => `reader.K${i + 1}`),
+  "reader.M1",
+  "reader.M2",
+  "reader.C1",
+  "reader.C2",
+  "reader.C3",
+  "reader.V1",
+  "reader.V2",
+  "reader.X2",
   ...["A", "B", "C", "D", "E"].map((l) => `owner.${l}`),
   "style-v1",
   "style",
@@ -112,7 +132,7 @@ describe("lessons parser", () => {
   });
 
   it("numbers process items with a bold title", () => {
-    for (let n = 1; n <= 11; n++) {
+    for (let n = 1; n <= 13; n++) {
       expect(lessons().get(`process.${n}`)!.text).toMatch(/^\d+\.\s+\*\*/);
     }
   });

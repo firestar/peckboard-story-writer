@@ -31,6 +31,9 @@ const VN_ONLY = new Set([
   "choices",
   "system-voice",
   "mechanical",
+  "reader.vn",
+  "reader.V1",
+  "reader.V2",
 ]);
 
 const H2_SECTIONS: Record<string, string> = {
@@ -38,6 +41,7 @@ const H2_SECTIONS: Record<string, string> = {
   "1A": "memory",
   "1B": "craft",
   "1C": "research",
+  "1D": "reader",
   "2": "style-v1",
   "3": "style",
   "4": "english",
@@ -78,6 +82,16 @@ const H3_SECTIONS: Record<string, Array<[string, string]>> = {
     ["Revision", "revision"],
     ["AI failure modes", "ai"],
     ["Owner decisions", "owner"],
+  ],
+  reader: [
+    ["Introduce every character", "intro-characters"],
+    ["Openings", "openings"],
+    ["Opening craft", "opening-craft"],
+    ["What the reader knows", "reader-knows"],
+    ["Mystery vs confusion", "mystery"],
+    ["Checking from the reader's side", "checking"],
+    ["Visual-novel specific", "vn"],
+    ["Stating feelings", "feelings"],
   ],
   english: [
     ["Conciseness", "conciseness"],
@@ -212,6 +226,8 @@ function parseH3Subsections(
       } else {
         parseNumberedItems(lines, idx + 1, subEnd, "research", id, out);
       }
+    } else if (h2id === "reader") {
+      parseCodedItems(lines, idx + 1, subEnd, id, out);
     }
   }
 }
@@ -291,6 +307,28 @@ function parseOwnerItems(lines: string[], start: number, end: number, parent: st
     const bodyLines = trimTrailingBlank(lines.slice(idx, itemEnd));
     const id = `owner.${letter}`;
     const tm = lines[idx].match(/\*\*([A-E]\. [^*]+)\*\*/);
+    out.set(id, {
+      id,
+      title: tm ? tm[1].trim() : lines[idx].trim(),
+      text: bodyLines.join("\n"),
+      parent,
+      vnOnly: VN_ONLY.has(id),
+    });
+  }
+}
+
+function parseCodedItems(lines: string[], start: number, end: number, parent: string, out: Map<string, Lesson>): void {
+  const items: Array<{ idx: number; code: string }> = [];
+  for (let i = start; i < end; i++) {
+    const m = lines[i].match(/^- \*\*([A-Z]\d{1,2})\. /);
+    if (m) items.push({ idx: i, code: m[1] });
+  }
+  for (let k = 0; k < items.length; k++) {
+    const { idx, code } = items[k];
+    const itemEnd = k + 1 < items.length ? items[k + 1].idx : end;
+    const bodyLines = trimTrailingBlank(lines.slice(idx, itemEnd));
+    const id = `reader.${code}`;
+    const tm = lines[idx].match(/\*\*([A-Z]\d{1,2}\. [^*]+)\*\*/);
     out.set(id, {
       id,
       title: tm ? tm[1].trim() : lines[idx].trim(),
@@ -393,7 +431,7 @@ export function renderLessons(ids: string[], opts: { format: "prose" | "vn"; ove
     .join("\n\n");
 }
 
-const PACK_IDS = ["intro", "process", "memory", "craft", "research", "style-v1", "style", "english", "choices", "system-voice", "mechanical", "card-template"];
+const PACK_IDS = ["intro", "process", "memory", "craft", "research", "reader", "style-v1", "style", "english", "choices", "system-voice", "mechanical", "card-template"];
 
 /// Every top-level section in document order, with overrides applied (to a
 /// section or any of its sub-sections). Unlike renderLessons this ignores
