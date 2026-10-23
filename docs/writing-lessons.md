@@ -369,10 +369,10 @@ Owner: "starting a book with 'by the time' sounds dumb."
   Mythcreants, "Introducing Otherworldly Elements Without Confusing Readers")
 - **K3. Show a term in use:** not defined up front — but it must be understandable from that
   context.
-- **K4. Ask what the reader needs:** not what you know.
+- **K4. Ask what the reader needs:** "what does the reader need right now?", not "what do I know?".
 - **K5. Put important facts where they land:** main clause, short sentence, start or end of a
   paragraph; never buried mid-sentence.
-- **K6. Two new names per paragraph, max:** every he/she/it needs an obvious owner.
+- **K6. Two new names or terms per paragraph, max:** every he/she/it needs an obvious owner.
 - **K7. A name dropped before its referent is confusion:** not characterisation. (Winkle, "Lessons
   From the Exposition of Crescent City")
 - **K8. Anything unusual about a character belongs in their introduction:** not sprung later.
