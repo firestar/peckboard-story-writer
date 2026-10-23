@@ -72,7 +72,6 @@ function checkElement(key: ElementKey, value: unknown): void {
   }
 }
 
-/// Validate `update` and merge it over `existing`. Returns the merged brief
 /// Validate `update` and merge it over `existing`. `generating(k)` says
 /// whether element k's AI-generate card is still open. Returns the merged
 /// brief plus the element keys whose edits were dropped because an
@@ -97,7 +96,6 @@ export function mergeWizardUpdate(
     elements: { ...base.elements },
     lesson_overrides: { ...(base.lesson_overrides ?? {}) },
   };
-  const aiOwned = (k: ElementKey) => generating(k);
   const ignored = new Set<ElementKey>();
 
   if (update.about !== undefined) {
@@ -143,7 +141,7 @@ export function mergeWizardUpdate(
     for (const [k, v] of Object.entries(update.elements)) {
       if (!isElementKey(k)) throw new Error(`elements.${k}: unknown element`);
       checkElement(k, v);
-      if (aiOwned(k)) {
+      if (generating(k)) {
         // Only an actual change counts as a dropped edit (a full-brief save
         // echoes every element back).
         if (JSON.stringify(v) !== JSON.stringify(base.elements[k])) ignored.add(k);
@@ -158,7 +156,7 @@ export function mergeWizardUpdate(
     if (!isObj(update.status)) throw new Error("status: expected an object");
     for (const [k, v] of Object.entries(update.status)) {
       if (!isElementKey(k)) throw new Error(`status.${k}: unknown element`);
-      if (aiOwned(k)) {
+      if (generating(k)) {
         if (v !== "awaiting_ai") ignored.add(k);
         continue;
       }

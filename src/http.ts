@@ -144,13 +144,22 @@ function getDefaults(): any {
 }
 
 /// Merge the wizard's partial brief update (only the fields the owner
-/// changed) over the stored brief — see src/wizard.ts for the rules.
+/// changed) over the stored brief — see src/wizard.ts for the rules. Once
+/// the pipeline has started, the story's shape (format, chapter count) is
+/// fixed: the engine derives its chapter units from it.
 function saveWizard(body: any): any {
   const projectId = requireProjectId();
   if (body?.brief === undefined) throw new Error("brief (object) is required");
   const engine = getEngine(projectId);
   const generating = (k: string) => engine.units[`generate:${k}`]?.status === "open";
-  const { brief, ignored } = mergeWizardUpdate(getBrief(projectId), body.brief, MAX_CHAPTERS, generating);
+  const stored = getBrief(projectId);
+  const { brief, ignored } = mergeWizardUpdate(stored, body.brief, MAX_CHAPTERS, generating);
+  if (engine.stage !== "setup" && stored) {
+    const before = normalizeBrief(stored).basics;
+    if (brief.basics.chapter_count !== before.chapter_count || brief.basics.format !== before.format) {
+      throw new PipelineConflict(`format and chapter count are fixed once the pipeline has started (stage: ${engine.stage})`);
+    }
+  }
   putBrief(projectId, brief);
   return { ok: true, brief, ignored };
 }

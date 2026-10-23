@@ -148,6 +148,20 @@ describe("POST /wizard (partial merge)", () => {
       "style.humour": "Dry wit is fine.",
     });
   });
+
+  it("fixes format and chapter count once the pipeline has started", () => {
+    const modes = Object.fromEntries(Object.keys(authed("GET", "/defaults").body.brief.modes).map((k) => [k, "write"]));
+    save({ about: "x", basics: { chapter_count: 3 }, modes });
+    expect(authed("POST", "/pipeline/start").status).toBe(200);
+
+    for (const basics of [{ chapter_count: 5 }, { format: "vn" }]) {
+      const res = save({ basics });
+      expect(res.status, JSON.stringify(basics)).toBe(409);
+      expect(res.body.error).toMatch(/fixed once the pipeline has started/);
+    }
+    expect(save({ basics: { chapter_count: 3, title: "Renamed" } }).status).toBe(200);
+    expect(authed("GET", "/state").body.brief.basics).toMatchObject({ chapter_count: 3, format: "prose", title: "Renamed" });
+  });
 });
 
 describe("lesson overrides", () => {
