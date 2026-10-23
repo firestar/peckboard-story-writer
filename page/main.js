@@ -1,171 +1,239 @@
 // Story tab shell. Runs inside PeckBoard's sandboxed plugin iframe (opaque
 // origin, no auth token) — all data flows through the parent-proxied
-// postMessage fetch bridge (see peckboard/web/src/components/PluginFullPage.tsx).
+// postMessage bridge (bridge.js).
 //
-// This scaffold renders: a stage badge, the brief (once the wizard has run)
-// or a minimal JSON-brief form to seed one, and the current records/pipeline
-// state. The full wizard (per-element modes, character sheets, etc.) and the
-// pipeline dashboard (stage cards, per-chapter grid, viewers) are built out
-// on top of this shell in later cards.
+// Routes between the setup wizard (wizard.js — while the pipeline is in
+// its "setup" stage) and the pipeline view once it has started (a minimal
+// stage/unit summary for now; the live dashboard replaces it). The wizard
+// stays reachable read-only from the pipeline view.
 
 import { CSS } from "./style.js";
+import { getJSON, onDataChange } from "./bridge.js";
+import { h, clear } from "./dom.js";
+import { mountWizard } from "./wizard.js";
 
 const P = "/api/plugin-ui/story-writer";
 
 // ── theme ────────────────────────────────────────────────────────────────────
 
+const themeParam = new URLSearchParams(window.location.search).get("theme");
 const mediaDark = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
-(function stampTheme() {
-  const q = new URLSearchParams(window.location.search).get("theme");
-  const theme = q === "dark" || q === "light" ? q : mediaDark && mediaDark.matches ? "dark" : "light";
+function stampTheme() {
+  const theme = themeParam === "dark" || themeParam === "light" ? themeParam : mediaDark && mediaDark.matches ? "dark" : "light";
   document.documentElement.dataset.theme = theme;
-})();
-
-// ── parent-proxied fetch bridge ──────────────────────────────────────────────
-
-const pending = new Map();
-let seq = 0;
-window.addEventListener("message", (e) => {
-  const m = e.data;
-  if (m && m.type === "plugin-ui-fetch-result" && pending.has(m.requestId)) {
-    const cb = pending.get(m.requestId);
-    pending.delete(m.requestId);
-    cb(m);
-    return;
-  }
-  // Store-write notification (see usePluginDataForward): refetch state.
-  if (m && m.type === "plugin-ui-event" && m.event === "plugin-data") {
-    loadState();
-  }
-});
-
-function api(method, path, body) {
-  return new Promise((resolve, reject) => {
-    const requestId = ++seq;
-    pending.set(requestId, (m) => {
-      let data = null;
-      try {
-        data = m.body ? JSON.parse(m.body) : null;
-      } catch (_e) {
-        // non-JSON error body; fall through to the status check
-      }
-      if (m.status >= 200 && m.status < 300) resolve(data || {});
-      else reject(new Error((data && data.error) || "request failed (HTTP " + m.status + ")"));
-    });
-    parent.postMessage(
-      {
-        type: "plugin-ui-fetch",
-        requestId,
-        method,
-        path,
-        body: body === undefined ? undefined : JSON.stringify(body),
-      },
-      "*",
-    );
-  });
 }
-const getJSON = (path) => api("GET", path);
-const postJSON = (path, body) => api("POST", path, body || {});
-
-// ── DOM helpers ──────────────────────────────────────────────────────────────
-
-function el(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text !== undefined) n.textContent = text;
-  return n;
-}
-function clear(n) {
-  while (n.firstChild) n.removeChild(n.firstChild);
-  return n;
+stampTheme();
+// No explicit ?theme= means the host is on "auto": follow the OS live.
+if (mediaDark && themeParam !== "dark" && themeParam !== "light" && mediaDark.addEventListener) {
+  mediaDark.addEventListener("change", stampTheme);
 }
 
-// ── screens ──────────────────────────────────────────────────────────────────
-
-const style = el("style");
+const style = document.createElement("style");
 style.textContent = CSS;
 document.head.appendChild(style);
 
-const root = el("div", "sw-app");
+const root = h("div", { class: "sw-app" });
 document.getElementById("app").appendChild(root);
 
-function renderLoading() {
-  clear(root);
-  root.appendChild(el("p", "sw-muted", "Loading…"));
+// ── state & routing ──────────────────────────────────────────────────────────
+
+let defaults = null;
+let state = null;
+let view = null; // { kind: "wizard", readOnly, ctrl } | { kind: "pipeline" }
+let showSetup = false;
+
+function stageOf(st) {
+  return (st && st.engine && st.engine.stage) || (st && st.pipeline && st.pipeline.stage) || "setup";
 }
 
-function renderError(err) {
+function teardown() {
+  if (view && view.ctrl) view.ctrl.destroy();
+  view = null;
   clear(root);
-  const header = el("div", "sw-header");
-  header.appendChild(el("h1", null, "Story Writer"));
-  root.appendChild(header);
-  root.appendChild(el("p", "sw-error", String(err && err.message ? err.message : err)));
 }
 
-function renderState(state) {
-  clear(root);
-
-  const header = el("div", "sw-header");
-  header.appendChild(el("h1", null, (state.brief && state.brief.title) || "Story Writer"));
-  header.appendChild(el("span", "sw-stage", (state.pipeline && state.pipeline.stage) || "setup"));
-  root.appendChild(header);
-
-  if (!state.brief) {
-    const card = el("div", "sw-card");
-    card.appendChild(el("h2", null, "Set up this story"));
-    card.appendChild(
-      el(
-        "p",
-        "sw-muted",
-        "No brief yet. The setup wizard (basics, premise, characters, style rules, …) lands " +
-          "in a later card; paste a brief JSON here to seed one for testing.",
-      ),
-    );
-    const textarea = el("textarea", "sw-input");
-    textarea.placeholder = '{"title": "...", "genre": "...", "format": "prose"}';
-    card.appendChild(textarea);
-    const btn = el("button", "sw-btn", "Save brief");
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        const brief = JSON.parse(textarea.value || "{}");
-        await postJSON(`${P}/wizard`, { brief });
-        await loadState();
-      } catch (e) {
-        renderError(e);
-      } finally {
-        btn.disabled = false;
-      }
+function route() {
+  const stage = stageOf(state);
+  const wasKind = view && view.kind;
+  if (stage === "setup" || showSetup) {
+    const readOnly = stage !== "setup";
+    if (view && view.kind === "wizard" && view.readOnly === readOnly) {
+      view.ctrl.update(state);
+      return;
+    }
+    teardown();
+    window.scrollTo(0, 0);
+    const ctrl = mountWizard(root, {
+      defaults,
+      state,
+      readOnly,
+      P,
+      refresh,
+      onClose: readOnly
+        ? () => {
+            showSetup = false;
+            route();
+          }
+        : null,
     });
-    card.appendChild(btn);
-    root.appendChild(card);
+    view = { kind: "wizard", readOnly, ctrl };
     return;
   }
+  // The pipeline view re-renders on every refresh; keep the scroll position
+  // unless we just arrived from the wizard.
+  const y = wasKind === "pipeline" ? window.scrollY : 0;
+  teardown();
+  view = { kind: "pipeline" };
+  renderPipeline(state);
+  window.scrollTo(0, y);
+}
+let refreshing = null;
+let again = false;
+let refreshTimer = null;
 
-  const briefCard = el("div", "sw-card");
-  briefCard.appendChild(el("h2", null, "Brief"));
-  briefCard.appendChild(el("pre", "sw-pre", JSON.stringify(state.brief, null, 2)));
-  root.appendChild(briefCard);
-
-  const recordsCard = el("div", "sw-card");
-  recordsCard.appendChild(el("h2", null, "Records"));
-  recordsCard.appendChild(el("pre", "sw-pre", JSON.stringify(state.records || {}, null, 2)));
-  root.appendChild(recordsCard);
-
-  const pipelineCard = el("div", "sw-card");
-  pipelineCard.appendChild(el("h2", null, "Pipeline"));
-  pipelineCard.appendChild(el("pre", "sw-pre", JSON.stringify(state.pipeline || {}, null, 2)));
-  root.appendChild(pipelineCard);
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => refresh().catch(() => {}), 120);
 }
 
-async function loadState() {
-  renderLoading();
+/// Refetch /state and re-route. Coalesces: a refresh requested while one
+/// is in flight runs once more after it.
+function refresh() {
+  if (refreshing) {
+    again = true;
+    return refreshing;
+  }
+  refreshing = (async () => {
+    try {
+      state = await getJSON(`${P}/state`);
+      route();
+    } catch (e) {
+      if (view && view.kind === "wizard") view.ctrl.notify(`Couldn't refresh: ${e.message || e}`, "err");
+      else renderFatal(e);
+    } finally {
+      refreshing = null;
+      if (again) {
+        again = false;
+        scheduleRefresh();
+      }
+    }
+  })();
+  return refreshing;
+}
+
+// Store-write notification (see usePluginDataForward): refetch state.
+onDataChange(scheduleRefresh);
+
+// ── pipeline view (placeholder until the dashboard lands) ────────────────────
+
+const STAGES = [
+  ["setup", "Setup"],
+  ["records", "Records"],
+  ["pilot", "Pilot chapter"],
+  ["pilot_review", "Your review"],
+  ["chapters", "Chapters"],
+  ["review", "Review passes"],
+  ["final", "Final"],
+];
+
+function renderPipeline(st) {
+  const stage = stageOf(st);
+  const at = STAGES.findIndex(([id]) => id === stage);
+  const title = (st.brief && st.brief.basics && st.brief.basics.title) || "Story";
+  const units = Object.values((st.engine && st.engine.units) || {}).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  root.appendChild(
+    h(
+      "header",
+      { class: "sw-top" },
+      h("div", { class: "sw-top-title" }, h("span", { class: "sw-kicker" }, "Story pipeline"), h("h1", { class: "sw-title" }, title)),
+      h(
+        "button",
+        {
+          class: "sw-btn secondary",
+          type: "button",
+          onclick: () => {
+            showSetup = true;
+            route();
+          },
+        },
+        "View setup",
+      ),
+    ),
+  );
+  root.appendChild(
+    h(
+      "div",
+      { class: "sw-card" },
+      h("h2", null, "Stage"),
+      h(
+        "div",
+        { class: "sw-stages" },
+        STAGES.map(([id, label], i) => h("span", { class: `sw-stage${i === at ? " on" : i < at ? " done" : ""}` }, label)),
+      ),
+      st.engine && st.engine.note ? h("p", { class: "sw-muted" }, st.engine.note) : null,
+    ),
+  );
+  root.appendChild(
+    h(
+      "div",
+      { class: "sw-card" },
+      h("h2", null, "Cards"),
+      units.length
+        ? h(
+            "table",
+            { class: "sw-table" },
+            h("thead", null, h("tr", null, h("th", null, "Unit"), h("th", null, "Kind"), h("th", null, "Status"))),
+            h(
+              "tbody",
+              null,
+              units.map((u) =>
+                h(
+                  "tr",
+                  null,
+                  h("td", null, u.id),
+                  h("td", { class: "sw-muted" }, u.kind),
+                  h(
+                    "td",
+                    null,
+                    h("span", { class: `sw-badge ${u.status === "done" ? "ok" : u.status === "failed" ? "err" : "busy"}` }, u.status),
+                  ),
+                ),
+              ),
+            ),
+          )
+        : h("p", { class: "sw-muted" }, "No cards yet."),
+    ),
+  );
+  root.appendChild(h("div", { class: "sw-card" }, h("h2", null, "Records"), h("pre", { class: "sw-pre" }, JSON.stringify(st.records || {}, null, 2))));
+}
+
+// ── boot ─────────────────────────────────────────────────────────────────────
+
+function renderFatal(err) {
+  teardown();
+  root.appendChild(
+    h(
+      "div",
+      { class: "sw-panel" },
+      h("h2", null, "Story Writer"),
+      h("p", { class: "sw-error" }, String(err && err.message ? err.message : err)),
+      h("button", { class: "sw-btn", type: "button", onclick: boot }, "Try again"),
+    ),
+  );
+}
+
+async function boot() {
+  teardown();
+  root.appendChild(h("p", { class: "sw-muted" }, "Loading…"));
   try {
-    const state = await getJSON(`${P}/state`);
-    renderState(state);
+    const [d, s] = await Promise.all([getJSON(`${P}/defaults`), getJSON(`${P}/state`)]);
+    defaults = d;
+    state = s;
+    teardown();
+    route();
   } catch (e) {
-    renderError(e);
+    renderFatal(e);
   }
 }
 
-loadState();
+boot();

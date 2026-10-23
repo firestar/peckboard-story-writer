@@ -114,6 +114,10 @@ function toPromptBrief(brief: Brief | null): PromptBrief | null {
   return brief as unknown as PromptBrief | null;
 }
 
+/// The story's edits to the built-in style guide (wizard "style rules").
+function overridesOf(brief: Brief | null): Record<string, string> {
+  return brief?.lesson_overrides ?? {};
+}
 function toPromptFeedback(feedback: Feedback[]): PromptFeedback[] {
   return feedback.map((f) => ({ source: f.source, chapter: f.chapter, text: f.text, at: f.at }));
 }
@@ -171,6 +175,7 @@ function materialize(ctx: Ctx, unit: Unit, spec: UnitSpec): void {
   const rendered = renderCard(spec.kind, {
     brief: toPromptBrief(ctx.brief),
     feedback: toPromptFeedback(ctx.feedback),
+    overrides: overridesOf(ctx.brief),
     chapter: spec.chapter,
     pass: spec.pass,
     element: spec.element,
@@ -766,7 +771,12 @@ export function requestApprove(projectId: string): { ok: true } {
   for (const unit of Object.values(engine.units)) {
     if (unit.kind !== "chapter" || !unit.card_id) continue;
     try {
-      const rendered = renderCard("chapter", { brief: toPromptBrief(brief), feedback: toPromptFeedback(feedback), chapter: unit.chapter });
+      const rendered = renderCard("chapter", {
+        brief: toPromptBrief(brief),
+        feedback: toPromptFeedback(feedback),
+        overrides: overridesOf(brief),
+        chapter: unit.chapter,
+      });
       updateCard({ card_id: unit.card_id, description: `${rendered.description}\n\n${unitMarker(unit.id, unit.attempt)}`, blocked: false });
     } catch (e) {
       engine.note = `failed to unblock chapter ${unit.chapter}: ${errMsg(e)}`;

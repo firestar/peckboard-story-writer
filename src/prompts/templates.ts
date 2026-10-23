@@ -94,7 +94,9 @@ export interface CardSpec {
 
 export const MAX_DESCRIPTION_CHARS = 48000;
 
-const DEFAULT_BANNED = [
+/// Always banned on top of the story's own list (rulesSection); the wizard
+/// shows these as built-in.
+export const DEFAULT_BANNED = [
   "tapestry",
   "testament to",
   "delve",

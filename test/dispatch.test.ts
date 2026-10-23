@@ -323,14 +323,15 @@ describe("dispatch: http.request.authed (project UI routes)", () => {
     dispatch("http.request.authed", {
       method: "POST",
       path: "/api/plugin-ui/story-writer/wizard",
-      body: JSON.stringify({ brief: { title: "Ashwood" } }),
+      body: JSON.stringify({ brief: { basics: { title: "Ashwood" } } }),
     });
     const resp = JSON.parse(
       dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/state" }),
     );
     const body = JSON.parse(resp.payload.body);
     expect(body.project_id).toBe("proj-1");
-    expect(body.brief).toEqual({ title: "Ashwood" });
+    expect(body.brief.basics).toMatchObject({ title: "Ashwood", format: "prose" });
+    expect(body.brief.elements.characters).toEqual([]);
     expect(body.records).toEqual(EMPTY_RECORDS);
     expect(body.pipeline.stage).toBe("setup");
     expect(body.chapters).toEqual([]);

@@ -90,8 +90,49 @@ sudo bash install.sh
 - `promptPack()` renders the whole default style guide (for `story_get_brief`)
   followed by the story's rules and banned words.
 - Per-story overrides: pass `overrides: {"<lesson id>": "replacement text"}`
-  (empty string omits the section) to `renderCard`/`renderLessons` (any id) or
-  `promptPack` (top-level ids only).
+  (empty string omits the section) to `renderCard`/`renderLessons`/
+  `promptPack`. An override on a sub-section (`english.conciseness`) also
+  applies inside a card that embeds its whole parent (`english`). The
+  wizard stores them as `brief.lesson_overrides`; the pipeline passes them
+  to every card it renders.
+
+## Setup wizard (Story tab)
+
+`page/` is the sandboxed Story tab (vanilla JS, bundled by `esbuild.js`
+stage 1): `bridge.js` (postMessage fetch bridge + `plugin-ui-event`
+refresh; GETs are re-posted with backoff because a cold-loaded frame can
+run before the host attaches its listener), `model.js` (pure catalogs,
+normalizers, merge/gate logic — unit-tested), `wizard.js` (the wizard),
+`main.js` (theme + routing: wizard while the stage is `setup`, a minimal
+pipeline view after, setup read-only from there), `style.js` (PeckBoard's
+light/dark tokens, `?theme=` or `prefers-color-scheme`).
+
+- Steps: story idea -> basics (title; genre, format, POV, tense, tone,
+  audience, rating as dropdowns, "Other…" where a custom value makes
+  sense; chapter count 1-40) -> who writes what (per element: *I write it*
+  / *AI drafts, I edit* / *AI generates*) -> one step per element ->
+  review & start.
+- Characters: full sheets (role, personality, values/fears/flaws, want vs
+  need, lie/wound/ghost, one speech habit, initial emotion, a starting
+  attitude + reason toward every other character, what they know).
+  Relationships pick both sides from the character list; AI drafts that
+  refer to characters by name are matched, unknown names are flagged.
+- Style rules: the built-in style guide (style v2 blocks, English rules,
+  and for VN the choice-label and system-voice sections) shown per section
+  with Edit / Turn off / Reset (`lesson_overrides`), plus the story's own
+  rule list. Banned words: the built-in list plus the story's own.
+- AI elements: "Draft/Generate with AI" (or "Send N to the AI" on the
+  review step) queues `/pipeline/generate`; the element locks while its
+  card runs, the draft lands live, the owner edits and approves it. A card
+  closed as won't-do shows "AI card closed" with Try again.
+- Edits autosave (debounced) as partial `POST /wizard` updates of only the
+  touched fields; the server (`src/wizard.ts`) validates and merges them,
+  ignores edits to an element whose AI card is running, never lets the page
+  set `awaiting_ai`, and resets a stale `awaiting_ai` on the owner's next
+  edit. Live refreshes merge the server copy without clobbering unsaved
+  typing or moving focus.
+- `GET .../defaults` supplies the starting brief, the editable style
+  guide, the built-in banned words and the chapter cap.
 
 ## Pipeline engine
 
@@ -139,8 +180,8 @@ card's own description.
 ## Status
 
 This is the scaffold (SW-1), the data model, chunked store and worker MCP
-tools (SW-2), the prompt pack (SW-3), and the pipeline stage machine
-(SW-4): manifest, hook/tool dispatch, the Story tab page shell, the six
-story_* tools, the writing-lessons prompt pack with per-stage card
-templates, and the card-driven pipeline engine described above. The setup
-wizard's full UI and the live pipeline dashboard land in later cards.
+tools (SW-2), the prompt pack (SW-3), the pipeline stage machine (SW-4) and
+the setup wizard (SW-5): manifest, hook/tool dispatch, the six story_*
+tools, the writing-lessons prompt pack with per-stage card templates, the
+card-driven pipeline engine, and the Story tab's setup wizard described
+above. The live pipeline dashboard lands in a later card.

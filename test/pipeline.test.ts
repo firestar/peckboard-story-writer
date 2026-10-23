@@ -436,7 +436,9 @@ describe("pipeline engine: models and retry", () => {
 
 describe("pipeline engine: host limits", () => {
   it("rejects a chapter_count above MAX_CHAPTERS", () => {
-    setupBrief({ basics: { ...briefFixture().basics, chapter_count: 41 } });
+    const res = authed("POST", "/wizard", { brief: briefFixture({ basics: { ...briefFixture().basics, chapter_count: 41 } }) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/chapter_count/);
     expect(authed("POST", "/pipeline/start").status).toBe(400);
     expect(cards.cards).toHaveLength(0);
   });

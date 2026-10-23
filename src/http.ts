@@ -10,8 +10,10 @@ import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
 import { listModels, requireProjectId } from "./host";
 import { getAllRecords, getBrief, getCards, getEngine, getFeedback, getPipelineState, listChapters, listReviews, putBrief } from "./docs";
-import { PipelineConflict, assembleExport, requestApprove, requestFeedback, requestGenerate, requestRetry, requestStart } from "./pipeline";
-import { Brief } from "./types";
+import { MAX_CHAPTERS, PipelineConflict, assembleExport, requestApprove, requestFeedback, requestGenerate, requestRetry, requestStart } from "./pipeline";
+import { DEFAULT_BANNED, styleGuide } from "./prompts";
+import { mergeWizardUpdate, normalizeBrief } from "./wizard";
+import { ELEMENT_KEYS, ELEMENT_MODE_LABELS, defaultBrief } from "./types";
 
 const PAGE_PATH = "/plugin-api/v1/story-writer";
 const API = "/api/plugin-ui/story-writer";
@@ -51,6 +53,9 @@ export function serveAuthed(payload: any): string {
     }
     if (method === "GET" && path === `${API}/models`) {
       return jsonResponse(200, { models: listModels() });
+    }
+    if (method === "GET" && path === `${API}/defaults`) {
+      return jsonResponse(200, getDefaults());
     }
     if (method === "POST" && path === `${API}/wizard`) {
       const b = parseBody(body);
@@ -110,9 +115,10 @@ function getState(): any {
     length: c.markdown.length,
     submitted_at: c.submitted_at,
   }));
+  const brief = getBrief(projectId);
   return {
     project_id: projectId,
-    brief: getBrief(projectId),
+    brief: brief ? normalizeBrief(brief) : null,
     records: getAllRecords(projectId),
     engine: getEngine(projectId),
     pipeline: getPipelineState(projectId),
@@ -123,12 +129,28 @@ function getState(): any {
   };
 }
 
+/// Static wizard catalog: the starting brief, the editable built-in style
+/// guide (lessons the owner can rewrite or turn off per story), the
+/// always-banned words, and the chapter cap.
+function getDefaults(): any {
+  return {
+    brief: defaultBrief(),
+    elements: ELEMENT_KEYS,
+    mode_labels: ELEMENT_MODE_LABELS,
+    style_guide: styleGuide(),
+    banned_words: DEFAULT_BANNED,
+    max_chapters: MAX_CHAPTERS,
+  };
+}
+
+/// Merge the wizard's partial brief update (only the fields the owner
+/// changed) over the stored brief — see src/wizard.ts for the rules.
 function saveWizard(body: any): any {
   const projectId = requireProjectId();
-  const brief = body?.brief;
-  if (!brief || typeof brief !== "object" || Array.isArray(brief)) {
-    throw new Error("brief (object) is required");
-  }
-  putBrief(projectId, brief as Brief);
-  return { ok: true };
+  if (body?.brief === undefined) throw new Error("brief (object) is required");
+  const engine = getEngine(projectId);
+  const generating = (k: string) => engine.units[`generate:${k}`]?.status === "open";
+  const { brief, ignored } = mergeWizardUpdate(getBrief(projectId), body.brief, MAX_CHAPTERS, generating);
+  putBrief(projectId, brief);
+  return { ok: true, brief, ignored };
 }

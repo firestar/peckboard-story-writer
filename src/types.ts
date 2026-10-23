@@ -109,7 +109,48 @@ export interface Brief {
   modes: Record<ElementKey, ElementMode>;
   status: Partial<Record<ElementKey, ElementStatus>>;
   elements: StoryElements;
+  /// Per-story edits to the built-in style guide, keyed by lesson id
+  /// (src/prompts/lessons.ts): replacement markdown, or "" to drop that
+  /// lesson from every card. Absent = all defaults.
+  lesson_overrides?: Record<string, string>;
   updated_at: string;
+}
+
+/// Starting modes for a fresh wizard: the owner writes the style rules and
+/// banned words (the built-in style guide already covers the defaults), the
+/// AI drafts or generates the rest for owner review.
+export const DEFAULT_MODES: Record<ElementKey, ElementMode> = {
+  premise: "draft",
+  plot_outline: "generate",
+  setting: "generate",
+  characters: "generate",
+  relationships: "generate",
+  themes: "draft",
+  endings: "generate",
+  style_rules: "write",
+  banned_words: "write",
+};
+
+export function defaultBrief(): Brief {
+  return {
+    about: "",
+    basics: { title: "", genre: "", format: "prose", chapter_count: 12, pov: "", tense: "", tone: "", audience: "", rating: "" },
+    modes: { ...DEFAULT_MODES },
+    status: {},
+    elements: {
+      premise: "",
+      plot_outline: "",
+      setting: "",
+      characters: [],
+      relationships: [],
+      themes: [],
+      endings: [],
+      style_rules: [],
+      banned_words: [],
+    },
+    lesson_overrides: {},
+    updated_at: new Date(0).toISOString(),
+  };
 }
 
 // ── Living records ───────────────────────────────────────────────────────

@@ -322,9 +322,53 @@ function hasAncestorInSet(id: string, idSet: Set<string>, all: Map<string, Lesso
   return false;
 }
 
+function depthOf(id: string, all: Map<string, Lesson>): number {
+  let d = 0;
+  let cur = all.get(id)?.parent ?? null;
+  while (cur) {
+    d++;
+    cur = all.get(cur)?.parent ?? null;
+  }
+  return d;
+}
+
+function overrideBlock(id: string, text: string): string {
+  return `<!-- story override: ${id} -->\n${text}`;
+}
+
+/// One lesson's text with the story's overrides applied, or null when the
+/// story drops it. The lesson's own override wins outright; otherwise every
+/// overridden DESCENDANT is swapped out (or cut, for "") inside the parent's
+/// text — shallowest first, so an overridden ancestor's replacement already
+/// supersedes its children — because a card that embeds a whole section
+/// (`english`) must still honour an edit to one of its parts
+/// (`english.conciseness`). A child's text is always a verbatim slice of its
+/// parent's (both are line ranges of the same doc), so a plain substring
+/// swap is exact.
+function lessonText(id: string, all: Map<string, Lesson>, overrides: Record<string, string>): string | null {
+  const own = overrides[id];
+  if (own === "") return null;
+  if (typeof own === "string" && own) return overrideBlock(id, own);
+  let text = all.get(id)!.text;
+  const nested = Object.keys(overrides)
+    .filter((k) => k !== id && typeof overrides[k] === "string" && all.has(k) && hasAncestorInSet(k, new Set([id]), all))
+    .sort((a, b) => depthOf(a, all) - depthOf(b, all));
+  for (const k of nested) {
+    const original = all.get(k)!.text;
+    const at = text.indexOf(original);
+    if (at < 0) continue; // inside an already-replaced ancestor
+    const before = text.slice(0, at);
+    const after = text.slice(at + original.length);
+    const value = overrides[k];
+    text = value === "" ? `${before.trimEnd()}\n\n${after.trimStart()}`.trim() : before + overrideBlock(k, value) + after;
+  }
+  return text;
+}
+
 /// Render a set of lesson ids as markdown: drops VN-only ids when
 /// `format` is "prose", dedupes an id whose ancestor is also in the list,
-/// and applies per-id text overrides (empty string = omit the id).
+/// and applies per-id text overrides (empty string = omit the id) — to the
+/// id itself or to any of its sub-sections (see `lessonText`).
 export function renderLessons(ids: string[], opts: { format: "prose" | "vn"; overrides?: Record<string, string> }): string {
   const all = lessons();
   const overrides = opts.overrides ?? {};
@@ -343,33 +387,63 @@ export function renderLessons(ids: string[], opts: { format: "prose" | "vn"; ove
   const idSet = new Set(kept);
   const final = kept.filter((id) => !hasAncestorInSet(id, idSet, all));
 
-  const rendered = final
-    .map((id) => {
-      const override = overrides[id];
-      if (override === "") return null;
-      if (override) return `<!-- story override: ${id} -->\n${override}`;
-      return all.get(id)!.text;
-    })
-    .filter((x): x is string => x !== null);
-
-  return rendered.join("\n\n");
+  return final
+    .map((id) => lessonText(id, all, overrides))
+    .filter((x): x is string => x !== null)
+    .join("\n\n");
 }
 
 const PACK_IDS = ["intro", "process", "memory", "craft", "research", "style-v1", "style", "english", "choices", "system-voice", "mechanical", "card-template"];
 
-/// Every top-level section in document order, with top-level-id overrides
-/// applied. Unlike renderLessons this ignores format — it's the reference
-/// doc behind promptPack (templates.ts), not a card.
+/// Every top-level section in document order, with overrides applied (to a
+/// section or any of its sub-sections). Unlike renderLessons this ignores
+/// format — it's the reference doc behind promptPack (templates.ts), not a
+/// card.
 export function packLessons(overrides: Record<string, string> = {}): string {
   const all = lessons();
   return PACK_IDS.map((id) => {
-    const lesson = all.get(id);
-    if (!lesson) throw new Error(`unknown lesson id: ${id}`);
-    const override = overrides[id];
-    if (override === "") return null;
-    if (override) return `<!-- story override: ${id} -->\n${override}`;
-    return lesson.text;
+    if (!all.has(id)) throw new Error(`unknown lesson id: ${id}`);
+    return lessonText(id, all, overrides);
   })
     .filter((x): x is string => x !== null)
     .join("\n\n");
+}
+
+/// The style-guide sections the setup wizard shows as editable defaults
+/// ("style rules"): the owner-approved v2 style blocks, the English-quality
+/// rules, and — for visual novels — choice labels and the system voice.
+/// Edits land in `brief.lesson_overrides` and reach every card through
+/// renderLessons.
+export const STYLE_GUIDE_IDS = [
+  "style.voice",
+  "style.flow",
+  "style.scene-logic",
+  "style.dialogue",
+  "style.humour",
+  "style.drama",
+  "english.intro",
+  "english.conciseness",
+  "english.variety",
+  "english.grammar",
+  "choices",
+  "system-voice",
+] as const;
+
+export interface StyleGuideEntry {
+  id: string;
+  title: string;
+  text: string;
+  vn_only: boolean;
+}
+
+export function styleGuide(): StyleGuideEntry[] {
+  const all = lessons();
+  return STYLE_GUIDE_IDS.map((id) => {
+    const lesson = all.get(id);
+    if (!lesson) throw new Error(`unknown lesson id: ${id}`);
+    // Doc headings carry history or a summary after the name ("(kept from
+    // v1, works)", "Humour: none written."); the wizard shows the plain name.
+    const title = id === "english.intro" ? "English quality" : lesson.title.replace(/\s*\(.*\)\s*$/, "").replace(/\s*:.*$/, "");
+    return { id, title, text: lesson.text, vn_only: lesson.vnOnly };
+  });
 }

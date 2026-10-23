@@ -67,6 +67,7 @@ export function manifestJson(): string {
 
     ui_routes: [
       "GET /api/plugin-ui/story-writer/state",
+      "GET /api/plugin-ui/story-writer/defaults",
       "GET /api/plugin-ui/story-writer/models",
       "POST /api/plugin-ui/story-writer/wizard",
       "POST /api/plugin-ui/story-writer/pipeline/generate",

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
 import { manifestJson } from "../src/manifest";
 
 const manifest = JSON.parse(manifestJson());
@@ -122,6 +123,17 @@ describe("manifest", () => {
     }
   });
 
+  it("declares every authed route src/http.ts serves, each exactly once", () => {
+    // Core 404s any ui_route the manifest doesn't declare before the plugin
+    // ever sees it, so a handler without a declaration is dead code.
+    const src = fs.readFileSync("src/http.ts", "utf8");
+    const served = Array.from(src.matchAll(/method === "(GET|POST)" && path === `\$\{API\}(\/[^`]+)`/g)).map(
+      (m) => `${m[1]} /api/plugin-ui/story-writer${m[2]}`,
+    );
+    expect(served.length).toBeGreaterThan(5);
+    expect(manifest.ui_routes.slice().sort()).toEqual(served.slice().sort());
+    expect(new Set(manifest.ui_routes).size).toBe(manifest.ui_routes.length);
+  });
   it("contributes a single project-level Story tab", () => {
     expect(manifest.sidebar_items).toBeUndefined();
     expect(manifest.folder_items).toBeUndefined();
