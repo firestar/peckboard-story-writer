@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { FakeCard, callerScope, docStore, fakeCards, fileWrites, pluginSettings, setHandlers } from "./fakeHost";
+import { FakeCard, callerScope, docStore, fakeCards, fileWrites, hostCalls, pluginSettings, setHandlers } from "./fakeHost";
 import { dispatch } from "../src/lib";
 
 const PROJECT = "proj-1";
@@ -143,6 +143,11 @@ describe("pipeline engine: happy path", () => {
     const state = authed("GET", "/state").body;
     expect(state.engine.stage).toBe("final");
     expect(state.engine.finished).toBe(true);
+    // The engine owns PipelineState's top-level stage and mirrors it.
+    expect(state.pipeline.stage).toBe("final");
+    expect(state.pipeline.stages.final.status).toBe("done");
+    expect(state.pipeline.stages.records.status).toBe("done");
+    expect(state.pipeline.stages.review.status).toBe("done");
 
     for (const ch of [1, 2, 3]) invoke("story_submit_chapter", { chapter: ch, markdown: `Chapter ${ch} text`, recap: `r${ch}` });
     const exported = authed("GET", "/export").body;
@@ -158,16 +163,16 @@ describe("pipeline engine: owner review gate", () => {
     authed("POST", "/pipeline/start");
     const recordsCard = cards.cards[0];
 
-    expect(authed("POST", "/pipeline/approve").status).toBe(400);
+    expect(authed("POST", "/pipeline/approve").status).toBe(409);
 
     finishCard(cards, recordsCard.id);
-    expect(authed("POST", "/pipeline/approve").status).toBe(400); // still in "pilot": pilot card not done yet
+    expect(authed("POST", "/pipeline/approve").status).toBe(409); // still in "pilot": pilot card not done yet
 
     const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
     finishCard(cards, pilotCard.id); // -> pilot_review
 
     expect(authed("POST", "/pipeline/feedback", { text: "Rushed ending." }).status).toBe(200);
-    expect(authed("POST", "/pipeline/approve").status).toBe(400); // pilot revision still open
+    expect(authed("POST", "/pipeline/approve").status).toBe(409); // pilot revision still open
 
     const revisionCard = open(cards.cards).find((c) => c.title.toLowerCase().includes("revise"))!;
     expect(revisionCard).toBeTruthy();
@@ -202,7 +207,7 @@ describe("pipeline engine: owner feedback revision loop", () => {
 
   it("rejects feedback before the pilot stage, and for a chapter that hasn't been submitted", () => {
     setupBrief();
-    expect(authed("POST", "/pipeline/feedback", { text: "too early" }).status).toBe(400);
+    expect(authed("POST", "/pipeline/feedback", { text: "too early" }).status).toBe(409);
 
     authed("POST", "/pipeline/start");
     finishCard(cards, cards.cards[0].id);
@@ -286,26 +291,61 @@ describe("pipeline engine: re-entrancy / idempotency", () => {
   it("rejects a second start instead of re-creating units", () => {
     setupBrief();
     authed("POST", "/pipeline/start");
-    expect(authed("POST", "/pipeline/start").status).toBe(400);
+    expect(authed("POST", "/pipeline/start").status).toBe(409);
     expect(cards.cards).toHaveLength(1);
   });
 
-  it("adopts an existing card by its marker instead of duplicating when the engine doc is stale", () => {
+  it("adopts the created card by its marker when the run died before persisting its id", () => {
+    // Snapshot the engine doc as stored at the moment the card is created —
+    // what survives if the run traps before its final putEngine.
+    let atCreate: any = null;
+    const ds = docStore();
+    docs = ds.docs;
+    setHandlers({
+      ...ds.handlers,
+      ...callerScope(PROJECT),
+      ...fileWrites().handlers,
+      ...cards.handlers,
+      peckboard_create_card: (input: any) => {
+        atCreate ??= JSON.parse(JSON.stringify(docs[`engine/${PROJECT}`]));
+        return cards.handlers.peckboard_create_card(input);
+      },
+    });
     setupBrief();
     authed("POST", "/pipeline/start");
     const recordsCard = cards.cards[0];
     expect(recordsCard.description).toContain("story-writer:unit=records#1");
+    expect(atCreate.in_flight).toBe(true);
+    expect(atCreate.units.records.card_id).toBeNull();
 
-    // Simulate a lost write: createCard really did succeed (the card
-    // above exists, with its marker) but the engine state update that
-    // should have recorded its card_id never landed — e.g. a crash
-    // between the host call returning and putEngine persisting.
-    const engineDoc = docs[`engine/${PROJECT}`] as any;
-    engineDoc.units.records.card_id = null;
-
+    docs[`engine/${PROJECT}`] = atCreate; // the final write never landed
     dispatch("timer.tick", { now: "2026-01-01T00:00:01Z" });
     expect(cards.cards).toHaveLength(1); // adopted, not duplicated
-    expect((docs[`engine/${PROJECT}`] as any).units.records.card_id).toBe(recordsCard.id);
+    const engine = docs[`engine/${PROJECT}`] as any;
+    expect(engine.units.records.card_id).toBe(recordsCard.id);
+    expect(engine.in_flight).toBe(false);
+  });
+
+  it("recovers a dropped card.step.after on the next timer.tick, then throttles the card-list sweep", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    cards.setStep(cards.cards[0].id, "done"); // no event fired
+    dispatch("timer.tick", { now: "" });
+    expect(authed("GET", "/state").body.engine.stage).toBe("pilot");
+
+    hostCalls.length = 0;
+    dispatch("timer.tick", { now: "" });
+    expect(hostCalls.some((c) => c.name === "peckboard_list_cards")).toBe(false);
+  });
+
+  it("ignores card events that are not a pipeline card finishing", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    hostCalls.length = 0;
+    dispatch("card.step.after", { card_id: "someone-elses", project_id: PROJECT, new_step: "done", terminal: true });
+    dispatch("card.step.after", { card_id: cards.cards[0].id, project_id: PROJECT, new_step: "in_progress", terminal: false });
+    expect(hostCalls.filter((c) => c.name !== "peckboard_store_get")).toEqual([]);
+    expect(hostCalls.some((c) => c.name === "peckboard_list_cards")).toBe(false);
   });
 });
 
@@ -317,7 +357,7 @@ describe("pipeline engine: AI-generate elements", () => {
     expect(gen.body.queued.slice().sort()).toEqual(["premise", "style_rules"]);
     expect(cards.cards).toHaveLength(2);
 
-    expect(authed("POST", "/pipeline/start").status).toBe(400); // still awaiting_ai
+    expect(authed("POST", "/pipeline/start").status).toBe(409); // still awaiting_ai
 
     const premiseCard = cards.cards.find((c) => c.title.toLowerCase().includes("premise"))!;
     invoke("story_update_state", { data: { draft_premise: "A reluctant hero rises." } });
@@ -327,7 +367,7 @@ describe("pipeline engine: AI-generate elements", () => {
     expect(afterDraft.elements.premise).toBe("A reluctant hero rises.");
     expect(afterDraft.status.premise).toBe("ai_draft");
 
-    expect(authed("POST", "/pipeline/start").status).toBe(400); // premise needs approval; style_rules still running
+    expect(authed("POST", "/pipeline/start").status).toBe(409); // premise needs approval; style_rules still running
 
     const styleCard = cards.cards.find((c) => c.title.toLowerCase().includes("style"))!;
     invoke("story_update_state", { data: { draft_style_rules: ["Keep sentences short."] } });
@@ -373,6 +413,9 @@ describe("pipeline engine: models and retry", () => {
     let state = authed("GET", "/state").body;
     expect(state.engine.units.records.status).toBe("failed");
     expect(state.engine.stage).toBe("records"); // stuck
+    expect(state.pipeline.stage).toBe("records");
+    expect(state.pipeline.stages.records.status).toBe("blocked");
+    expect(state.pipeline.stages.records.note).toMatch(/^records: /);
 
     const retry = authed("POST", "/pipeline/retry");
     expect(retry.body.retried).toEqual(["records"]);
@@ -384,6 +427,52 @@ describe("pipeline engine: models and retry", () => {
     expect(freshCards[0].id).not.toBe(recordsCard.id);
 
     finishCard(cards, freshCards[0].id);
-    expect(authed("GET", "/state").body.engine.stage).toBe("pilot");
+    const after = authed("GET", "/state").body;
+    expect(after.engine.stage).toBe("pilot");
+    expect(after.pipeline.stages.records.status).toBe("done");
+    expect(after.pipeline.stages.pilot.status).toBe("active");
+  });
+});
+
+describe("pipeline engine: host limits", () => {
+  it("rejects a chapter_count above MAX_CHAPTERS", () => {
+    setupBrief({ basics: { ...briefFixture().basics, chapter_count: 41 } });
+    expect(authed("POST", "/pipeline/start").status).toBe(400);
+    expect(cards.cards).toHaveLength(0);
+  });
+
+  it("keeps the engine and cards docs under 256 KiB for a worst-case 40-chapter run", () => {
+    setupBrief({ basics: { ...briefFixture().basics, chapter_count: 40 } });
+    expect(authed("POST", "/pipeline/start").status).toBe(200);
+
+    // Every review pass requests changes once (the most units a story can
+    // accumulate); everything else finishes as soon as it opens.
+    const challenged = new Set<string>();
+    for (let guard = 0; guard < 5000; guard++) {
+      const next = open(cards.cards)[0];
+      if (!next) {
+        const stage = authed("GET", "/state").body.engine.stage;
+        if (stage === "pilot_review") authed("POST", "/pipeline/approve");
+        else if (stage === "final") break;
+        else dispatch("timer.tick", { now: "" });
+        continue;
+      }
+      const pass = ALL_PASSES.find((p) => next.title.includes(`(${p})`));
+      if (pass) {
+        const ch = Number(/chapter (\d+)$/.exec(next.title)![1]);
+        const key = `${ch}:${pass}`;
+        const verdict = challenged.has(key) ? "pass" : "changes_requested";
+        challenged.add(key);
+        invoke("story_report_review", { chapter: ch, pass, verdict, notes: "n" });
+      }
+      finishCard(cards, next.id);
+    }
+
+    const engine = docs[`engine/${PROJECT}`] as any;
+    expect(engine.finished).toBe(true);
+    expect(Object.keys(engine.units)).toHaveLength(1 + 1 + 39 + 40 * 8 * 2);
+    const cap = 256 * 1024;
+    expect(JSON.stringify(engine).length).toBeLessThan(cap * 0.8);
+    expect(JSON.stringify(docs[`cards/${PROJECT}`]).length).toBeLessThan(cap * 0.8);
   });
 });

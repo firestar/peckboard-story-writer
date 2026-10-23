@@ -4,7 +4,7 @@
 //
 // KEEP IN SYNC with src/index.d.ts — an undeclared host call traps at runtime.
 
-type HostFn = (offset: bigint) => bigint;
+type HostFn = (offset: I64) => I64;
 
 /// Call a host function and parse its JSON response, surfacing an
 /// `{"error": ...}` envelope (or a trap) as a thrown Error.

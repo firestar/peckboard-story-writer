@@ -105,7 +105,7 @@ export const SCHEMAS = {
   story_update_state: {
     type: "object",
     properties: {
-      stage: { type: "string", enum: STAGES, description: "Pipeline stage id." },
+      stage: { type: "string", enum: STAGES, description: "Which stage this status/note is about (does not move the pipeline)." },
       status: { type: "string", enum: STAGE_STATUSES, description: "This stage's status." },
       note: { type: "string", description: "Short status note shown on the dashboard." },
       data: { type: "object", description: "Stage-specific structured data." },

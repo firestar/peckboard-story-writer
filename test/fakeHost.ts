@@ -17,9 +17,17 @@ function alloc(text: string): bigint {
   return offset;
 }
 
+// Buffers are freed once read (as the real runtime does) so long-running
+// tests don't accumulate every marshalled payload.
+function take(offset: bigint): string | undefined {
+  const text = memory.get(offset);
+  memory.delete(offset);
+  return text;
+}
+
 (globalThis as any).Memory = {
   fromString: (s: string) => ({ offset: alloc(s) }),
-  find: (offset: bigint) => ({ readString: () => memory.get(offset) ?? "" }),
+  find: (offset: bigint) => ({ readString: () => take(offset) ?? "" }),
 };
 
 (globalThis as any).Host = {
@@ -28,7 +36,7 @@ function alloc(text: string): bigint {
       {},
       {
         get: (_target, name: string) => (offset: bigint) => {
-          const input = JSON.parse(memory.get(offset) ?? "{}");
+          const input = JSON.parse(take(offset) ?? "{}");
           hostCalls.push({ name, input });
           return alloc(JSON.stringify(handlers[name] ? handlers[name](input) : {}));
         },

@@ -102,28 +102,37 @@ per project (collection `"engine"`), keyed by stable unit ids (`"records"`,
 card — the engine never creates a second card for the same id; a retry
 resets the unit in place (new attempt, same id) rather than minting a new
 one, and a card whose creation call succeeded but whose id got lost before
-it was persisted is recovered by matching a hidden `story-writer:unit=...`
-marker in the card's own description.
+it was persisted (the run's write-ahead `in_flight` flag is still set) is
+recovered by matching a hidden `story-writer:unit=...` marker in the
+card's own description.
 
-- `card.step.after` re-runs the engine for the card's project whenever one
-  of its cards reaches `done`/`wont_do`; `timer.tick` is the safety net,
-  sweeping every project with a running pipeline every ~30s.
+- The engine owns the top-level pipeline `stage` (mirrored into the
+  `state` doc for the dashboard); `story_update_state` only records
+  per-stage status/notes/data.
+- `card.step.after` re-runs the engine when one of its cards reaches
+  `done`/`wont_do`, reconciling from the event payload alone; `timer.tick`
+  is the safety net, re-listing a project's cards at most every 10 minutes
+  (`list_cards` returns every card with its full description).
 - Parallel chapter cards (2..N) are created blocked as soon as the pilot
-  starts, so they're visible before the owner approves it.
+  starts, so they're visible before the owner approves it. Stories are
+  capped at 40 chapters so each per-project doc stays under core's
+  256 KiB limit.
 - `POST .../pipeline/{generate,start,approve,feedback,retry}` and
   `GET .../export` (src/http.ts) are the owner/wizard actions: queue
   AI-generate-element cards, start the pipeline (gated on every
   draft/generate element being owner-approved), approve the pilot (unblocks
   the queued chapter cards), leave feedback on the pilot or any chapter
   (recorded, appended to style_rules, turned into a revision card), retry a
-  failed unit, and assemble the final manuscript.
+  failed unit, and assemble the final manuscript. A request the current
+  stage doesn't allow (approve before pilot_review or with a pilot
+  revision open, a second start, ...) answers 409.
 - Each review pass allows up to `MAX_REVIEW_ROUNDS` (2) attempts
   (`changes_requested` -> a revision card -> the same pass again) before
   moving on regardless, so one stubborn pass can't stall a chapter forever.
-- Every run is budgeted (a wall-clock deadline plus a max-creates-per-call
-  cap) so one hook call can never create an unbounded number of cards or
-  run past `call_timeout_secs`; whatever doesn't fit resumes on the next
-  event or tick.
+- Every run is budgeted (a 1.2 s wall-clock deadline plus a
+  max-creates-per-call cap) so one hook call stays inside core's 2 s
+  default call budget; whatever doesn't fit resumes on the next event or
+  tick.
 
 ## Status
 

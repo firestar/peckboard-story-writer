@@ -391,6 +391,11 @@ export interface EngineState {
   units: Record<string, Unit>;
   cursors: Record<string, ReviewCursor>; // keyed by chapter number (as a string)
   note: string | null;
+  // Persisted true just before a run's first card create and cleared when
+  // the run ends; still true at the start of a run means the previous one
+  // died mid-create, so cards are matched by marker before creating more.
+  in_flight?: boolean;
+  swept_at?: string | null; // last timer.tick full card-list reconcile
   updated_at: string;
 }
 
@@ -402,6 +407,8 @@ export function defaultEngineState(): EngineState {
     units: {},
     cursors: {},
     note: null,
+    in_flight: false,
+    swept_at: null,
     updated_at: new Date(0).toISOString(),
   };
 }

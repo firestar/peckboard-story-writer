@@ -28,7 +28,7 @@ import {
   upsertSection,
 } from "./docs";
 import { chapterFileName, writeBrief, writeChapter, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
-import { Brief, ChapterDoc, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, nowIso } from "./types";
+import { Brief, ChapterDoc, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, StageId, nowIso } from "./types";
 
 function mirrorChangedSections(projectId: string, sections: RecordSection[]): void {
   for (const section of sections) {
@@ -124,19 +124,19 @@ export function toolSubmitChapter(args: any, _context: any): any {
   return { ok: true, path: `story/chapters/${chapterFileName(chapter)}`, revision: doc.revision };
 }
 
-/// Report pipeline progress (stage, status, a status note, stage-specific
-/// data). Does not advance cards itself — card.step.after / timer.tick
-/// drive the stage machine (src/pipeline.ts, later card).
+/// Report per-stage progress (status, a status note, stage-specific data).
+/// The top-level `stage` is owned by the pipeline engine (src/pipeline.ts),
+/// so a worker's `stage` only selects which per-stage entry to update.
 export function toolUpdateState(args: any, _context: any): any {
   validate(SCHEMAS.story_update_state, args ?? {});
   const projectId = requireProjectId();
   const existing = getPipelineState(projectId);
-  const stage = typeof args?.stage === "string" ? args.stage : existing.stage;
 
   const stages = { ...existing.stages };
   if (typeof args?.stage === "string") {
-    const prior = stages[args.stage];
-    stages[args.stage] = {
+    const id = args.stage as StageId;
+    const prior = stages[id];
+    stages[id] = {
       status: typeof args?.status === "string" ? args.status : prior?.status ?? "active",
       note: typeof args?.note === "string" ? args.note : prior?.note,
       updated_at: nowIso(),
@@ -144,7 +144,7 @@ export function toolUpdateState(args: any, _context: any): any {
   }
 
   const next: PipelineState = {
-    stage,
+    stage: existing.stage,
     stages,
     note: typeof args?.note === "string" ? args.note : existing.note,
     data: { ...existing.data, ...(args?.data && typeof args.data === "object" ? args.data : {}) },

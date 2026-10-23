@@ -173,12 +173,11 @@ export function putEngine(projectId: string, state: EngineState): void {
   putDoc("engine", projectId, state);
 }
 
-/// Every project id with an engine doc. `card.step.after` already knows its
-/// project from the payload; `timer.tick`'s safety net has no project
-/// context at all, so it iterates this to find every pipeline it should
-/// nudge forward.
-export function listEngineProjects(): string[] {
-  return listDocs("engine").map((d) => d.key);
+/// Every project's engine doc. `card.step.after` already knows its project
+/// from the payload; `timer.tick`'s safety net has no project context at
+/// all, so it iterates this to find every pipeline it should nudge forward.
+export function listEngines(): { projectId: string; engine: EngineState }[] {
+  return listDocs("engine").map((d) => ({ projectId: d.key, engine: d.value as EngineState }));
 }
 
 // ── Feedback (one doc per project holding the append-only list) ──────────

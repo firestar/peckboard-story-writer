@@ -10,7 +10,7 @@ import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
 import { listModels, requireProjectId } from "./host";
 import { getAllRecords, getBrief, getCards, getEngine, getFeedback, getPipelineState, listChapters, listReviews, putBrief } from "./docs";
-import { assembleExport, requestApprove, requestFeedback, requestGenerate, requestRetry, requestStart } from "./pipeline";
+import { PipelineConflict, assembleExport, requestApprove, requestFeedback, requestGenerate, requestRetry, requestStart } from "./pipeline";
 import { Brief } from "./types";
 
 const PAGE_PATH = "/plugin-api/v1/story-writer";
@@ -75,7 +75,7 @@ export function serveAuthed(payload: any): string {
       return jsonResponse(200, assembleExport(requireProjectId()));
     }
   } catch (e) {
-    return jsonResponse(400, { error: errMsg(e) });
+    return jsonResponse(e instanceof PipelineConflict ? 409 : 400, { error: errMsg(e) });
   }
   return jsonResponse(404, { error: "not found" });
 }

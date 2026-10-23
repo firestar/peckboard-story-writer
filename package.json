@@ -7,11 +7,14 @@
     "bundle": "node esbuild.js",
     "build": "node esbuild.js && extism-js dist/index.js -i src/index.d.ts -o dist/plugin.wasm",
     "demo": "esbuild page/main.js --bundle --outfile=.demo/page.js --format=iife --target=es2020",
-    "test": "node esbuild.js && vitest run"
+    "test": "node esbuild.js && vitest run",
+    "typecheck": "node esbuild.js && tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
     "@extism/js-pdk": "^1.1.1",
+    "@types/node": "^20.19.43",
     "esbuild": "^0.23.1",
+    "typescript": "^5.9.3",
     "vitest": "^2.1.9"
   }
 }

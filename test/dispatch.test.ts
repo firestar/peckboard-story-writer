@@ -206,16 +206,16 @@ describe("dispatch: mcp.tool.invoke", () => {
     expect(invoke("story_get_records", { sections: ["knowledge"] }).records.knowledge).toHaveLength(1);
   });
 
-  it("story_update_state merges stage/status/note/data across calls without touching the brief", () => {
+  it("story_update_state merges per-stage status/note/data across calls but never moves the engine-owned stage", () => {
     expect(invoke("story_update_state", { stage: "pilot", status: "active", note: "drafting" })).toMatchObject({
       ok: true,
-      state: { stage: "pilot", note: "drafting" },
+      state: { stage: "setup", note: "drafting", stages: { pilot: { status: "active", note: "drafting" } } },
     });
     const second = invoke("story_update_state", { data: { chapters_ready: 1 } });
-    expect(second.state.stage).toBe("pilot"); // stage persists when not re-specified
+    expect(second.state.stage).toBe("setup");
     expect(second.state.data).toEqual({ chapters_ready: 1 });
     expect(second.state.stages.pilot).toMatchObject({ status: "active", note: "drafting" });
-    expect(invoke("story_get_brief")).toMatchObject({ brief: null, feedback: [], state: { stage: "pilot" } }); // separate collection
+    expect(invoke("story_get_brief")).toMatchObject({ brief: null, feedback: [], state: { stage: "setup" } }); // separate collection
   });
 
   it("story_report_review rejects a bad verdict", () => {
@@ -286,7 +286,7 @@ describe("dispatch: mcp.tool.invoke", () => {
     invoke("story_submit_records", { records: { glossary: [{ term: "Ley", definition: "magic grid" }] } });
     expect(JSON.parse(files["story/records/glossary.json"])).toEqual([{ term: "Ley", definition: "magic grid" }]);
     invoke("story_update_state", { stage: "records", status: "done" });
-    expect(JSON.parse(files["story/state.json"])).toMatchObject({ stage: "records", stages: { records: { status: "done" } } });
+    expect(JSON.parse(files["story/state.json"])).toMatchObject({ stage: "setup", stages: { records: { status: "done" } } });
     invoke("story_submit_chapter", { chapter: 2, markdown: "x", recap: "Bo leaves." });
     expect(JSON.parse(files["story/records/recaps.json"])).toEqual([{ chapter: 2, recap: "Bo leaves." }]);
   });

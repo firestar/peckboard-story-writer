@@ -14,9 +14,10 @@
 //
 // Every mutating entry point (the two hooks, and the request* functions
 // src/http.ts's /pipeline/* routes call) funnels into `runEngine`, which:
-//   1. reconciles every OPEN unit against the real card list (done/wont_do/
-//      missing), applying kind-specific side effects (a finished "generate"
-//      unit copies its draft into the brief);
+//   1. reconciles OPEN units with their cards — from the card.step.after
+//      payload itself, or (timer.tick, throttled) the full card list —
+//      applying kind-specific side effects (a finished "generate" unit
+//      copies its draft into the brief);
 //   2. materializes any pending "revision:fb:*" units (owner feedback can
 //      land in any stage from pilot_review onward);
 //   3. repeatedly tries to advance the current stage (create the next
@@ -25,7 +26,7 @@
 //
 // Budget: a wall-clock deadline plus a max-creates-per-call counter, so one
 // hook invocation can never create an unbounded number of cards or run
-// past the plugin's call_timeout_secs. Whatever doesn't fit resumes on the
+// past core's 2 s default call budget. Whatever doesn't fit resumes on the
 // next event or timer.tick.
 
 import { errMsg, skip } from "./verdict";
@@ -38,7 +39,7 @@ import {
   getFeedback,
   getPipelineState,
   listChapters,
-  listEngineProjects,
+  listEngines,
   getReview,
   putBrief,
   putCards,
@@ -61,6 +62,7 @@ import {
   ReviewVerdict,
   STAGES,
   StageId,
+  StageStatus,
   StoryElements,
   Unit,
   nowIso,
@@ -68,9 +70,17 @@ import {
 
 // ── Budget ───────────────────────────────────────────────────────────────
 
-const CREATE_BUDGET_MS = 1500;
-const TIMER_BUDGET_MS = 8000; // timer.tick's safety net runs across every project; stay well under call_timeout_secs (10)
+// Core's default per-call budget is 2 s; keep every hook/route invocation
+// (store reads/writes + card creates) comfortably inside it.
+const CREATE_BUDGET_MS = 1200;
+const TIMER_BUDGET_MS = 1200; // shared across every project in one timer.tick
 const MAX_CREATES_PER_RUN = 8;
+// list_cards returns every card with its full (up to ~48 KB) description, so
+// the hot path never calls it; timer.tick's safety-net sweep is throttled.
+const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+// ~17 units per chapter (draft + 8 review passes + up to 8 revisions) keeps
+// the engine and cards docs well under core's 256 KiB per-doc cap.
+export const MAX_CHAPTERS = 40;
 
 interface Budget {
   deadline: number;
@@ -92,14 +102,9 @@ interface Ctx {
   brief: Brief | null;
   feedback: Feedback[];
   engine: EngineState;
-  cardsCache: Card[] | null;
   budget: Budget;
   dirty: boolean;
-}
-
-function loadCards(ctx: Ctx): Card[] {
-  if (ctx.cardsCache === null) ctx.cardsCache = listCards(ctx.projectId);
-  return ctx.cardsCache;
+  wroteAhead: boolean; // this run persisted engine.in_flight before creating a card
 }
 
 function toPromptBrief(brief: Brief | null): PromptBrief | null {
@@ -152,22 +157,13 @@ function createCardSafe(ctx: Ctx, input: CreateCardInput): Card {
   }
 }
 
-/// Turn a pending unit (status "open", no card yet) into a real card —
-/// adopting an already-existing card by its marker instead of creating a
-/// duplicate if the engine doc lost track of it (e.g. a crash between
-/// createCard succeeding and the engine state that records its id being
-/// persisted). No-ops if the budget is spent; the next run retries.
+/// Turn a pending unit (status "open", no card yet) into a real card.
+/// Before the run's first create, `in_flight` is persisted so that a run
+/// dying between createCard and the final putEngine is detected next time
+/// (`adoptOrphans`). No-ops if the budget is spent; the next run retries.
 function materialize(ctx: Ctx, unit: Unit, spec: UnitSpec): void {
   if (!hasBudget(ctx.budget)) return;
   const marker = unitMarker(unit.id, unit.attempt);
-  const cards = loadCards(ctx);
-  const adopted = cards.find((c) => c.project_id === ctx.projectId && typeof c.description === "string" && c.description.includes(marker));
-  if (adopted) {
-    unit.card_id = adopted.id;
-    unit.updated_at = nowIso();
-    ctx.dirty = true;
-    return;
-  }
 
   const rendered = renderCard(spec.kind, {
     brief: toPromptBrief(ctx.brief),
@@ -189,12 +185,16 @@ function materialize(ctx: Ctx, unit: Unit, spec: UnitSpec): void {
   };
   if (model) input.model = model;
 
+  if (!ctx.wroteAhead) {
+    ctx.engine.in_flight = true;
+    putEngine(ctx.projectId, ctx.engine);
+    ctx.wroteAhead = true;
+  }
   const created = createCardSafe(ctx, input);
   unit.card_id = created.id;
   unit.updated_at = nowIso();
   ctx.budget.createsLeft -= 1;
   ctx.dirty = true;
-  ctx.cardsCache = [...cards, created]; // keep the cache correct for the rest of this run
 }
 
 /// Register `spec`'s unit if it doesn't exist yet, then materialize its
@@ -243,27 +243,58 @@ function resetUnit(ctx: Ctx, id: string): void {
 
 // ── Reconciliation ───────────────────────────────────────────────────────
 
-function reconcileAll(ctx: Ctx): void {
-  const cards = loadCards(ctx);
-  const byId = new Map(cards.map((c) => [c.id, c]));
-  for (const unit of Object.values(ctx.engine.units)) {
-    if (unit.status !== "open" || !unit.card_id) continue;
-    const card = byId.get(unit.card_id);
-    if (!card) {
-      unit.status = "failed";
-      unit.note = "card not found (deleted?)";
-      unit.updated_at = nowIso();
-      ctx.dirty = true;
-    } else if (card.step === "done") {
-      completeUnit(ctx, unit);
-      ctx.dirty = true;
-    } else if (card.step === "wont_do") {
-      unit.status = "failed";
-      unit.note = "card marked won't-do";
-      unit.updated_at = nowIso();
-      ctx.dirty = true;
+/// The previous run died between creating a card and persisting its id
+/// (`in_flight` left set): match every pending unit to its card by marker
+/// instead of creating a duplicate.
+function adoptOrphans(ctx: Ctx): void {
+  if (!ctx.engine.in_flight) return;
+  const pending = Object.values(ctx.engine.units).filter((u) => u.status === "open" && u.card_id === null);
+  if (pending.length > 0) {
+    const cards = listCards(ctx.projectId);
+    for (const unit of pending) {
+      const marker = unitMarker(unit.id, unit.attempt);
+      const card = cards.find((c) => typeof c.description === "string" && c.description.includes(marker));
+      if (card) {
+        unit.card_id = card.id;
+        unit.updated_at = nowIso();
+      }
     }
   }
+  ctx.engine.in_flight = false;
+  ctx.dirty = true;
+}
+
+/// card.step.after names the card and its new step — apply just that.
+function reconcileEvent(ctx: Ctx, cardId: string, newStep: string): void {
+  if (newStep !== "done" && newStep !== "wont_do") return;
+  const unit = Object.values(ctx.engine.units).find((u) => u.card_id === cardId && u.status === "open");
+  if (!unit) return;
+  if (newStep === "done") completeUnit(ctx, unit);
+  else failUnit(unit, "card marked won't-do");
+  ctx.dirty = true;
+}
+
+/// timer.tick's safety net for a dropped card.step.after or a deleted card.
+function reconcileSweep(ctx: Ctx): void {
+  const open = Object.values(ctx.engine.units).filter((u) => u.status === "open" && u.card_id !== null);
+  if (open.length === 0 || Date.now() >= ctx.budget.deadline) return;
+  const last = ctx.engine.swept_at ? Date.parse(ctx.engine.swept_at) : 0;
+  if (Date.now() - last < SWEEP_INTERVAL_MS) return;
+  const byId = new Map(listCards(ctx.projectId).map((c) => [c.id, c]));
+  for (const unit of open) {
+    const card = byId.get(unit.card_id as string);
+    if (!card) failUnit(unit, "card not found (deleted?)");
+    else if (card.step === "done") completeUnit(ctx, unit);
+    else if (card.step === "wont_do") failUnit(unit, "card marked won't-do");
+  }
+  ctx.engine.swept_at = nowIso();
+  ctx.dirty = true;
+}
+
+function failUnit(unit: Unit, note: string): void {
+  unit.status = "failed";
+  unit.note = note;
+  unit.updated_at = nowIso();
 }
 
 function completeUnit(ctx: Ctx, unit: Unit): void {
@@ -391,6 +422,7 @@ function advanceChapters(ctx: Ctx): boolean {
     if (unit.status !== "done") allDone = false;
   }
   if (!allDone) return false;
+  if (Object.values(ctx.engine.units).some((u) => u.kind === "revision" && u.status === "open")) return false;
   ctx.engine.stage = "review";
   for (let i = 1; i <= n; i++) {
     ctx.engine.cursors[String(i)] = { chapter: i, pass_index: 0, round: 1, waiting: "review" };
@@ -509,24 +541,55 @@ function syncCardsMirror(ctx: Ctx): void {
   putCards(ctx.projectId, refs);
 }
 
+/// The engine owns PipelineState's top-level stage (workers only report
+/// per-stage notes through story_update_state); mirror it after each run.
+function syncPipelineStage(ctx: Ctx): void {
+  const state = getPipelineState(ctx.projectId);
+  const stage = ctx.engine.stage;
+  const failed = Object.values(ctx.engine.units).find((u) => u.status === "failed");
+  const status: StageStatus = ctx.engine.finished ? "done" : failed ? "blocked" : "active";
+  const now = nowIso();
+  const stages = { ...state.stages };
+  let changed = state.stage !== stage;
+  for (const s of STAGES.slice(0, STAGES.indexOf(stage))) {
+    if (stages[s]?.status === "done") continue;
+    stages[s] = { ...stages[s], status: "done", updated_at: now };
+    changed = true;
+  }
+  const prior = stages[stage];
+  const note = failed ? `${failed.id}: ${failed.note ?? "failed"} — retry it from the dashboard` : prior?.note;
+  if (prior?.status !== status || prior?.note !== note) {
+    stages[stage] = { status, note, updated_at: now };
+    changed = true;
+  }
+  if (changed) putPipelineState(ctx.projectId, { ...state, stage, stages, updated_at: now });
+}
+
 // ── Entry points ─────────────────────────────────────────────────────────
+
+export interface RunTrigger {
+  event?: { card_id: string; new_step: string }; // card.step.after
+  sweep?: boolean; // timer.tick
+}
 
 /// Run the engine for one project: reconcile, materialize feedback
 /// revisions, then advance the stage machine until nothing more fits in
 /// `budget`. Never throws — a failure is recorded on `engine.note` instead
 /// of trapping the plugin.
-export function runEngine(projectId: string, budget: Budget = newBudget()): void {
+export function runEngine(projectId: string, budget: Budget = newBudget(), trigger: RunTrigger = {}): void {
   const ctx: Ctx = {
     projectId,
     brief: getBrief(projectId),
     feedback: getFeedback(projectId),
     engine: getEngine(projectId),
-    cardsCache: null,
     budget,
     dirty: false,
+    wroteAhead: false,
   };
   try {
-    reconcileAll(ctx);
+    adoptOrphans(ctx);
+    if (trigger.event) reconcileEvent(ctx, trigger.event.card_id, trigger.event.new_step);
+    if (trigger.sweep) reconcileSweep(ctx);
     materializeFeedbackRevisions(ctx);
     let progressed = true;
     while (progressed && hasBudget(ctx.budget)) {
@@ -536,43 +599,58 @@ export function runEngine(projectId: string, budget: Budget = newBudget()): void
     ctx.engine.note = `engine error: ${errMsg(e)}`;
     ctx.dirty = true;
   } finally {
+    if (ctx.wroteAhead) ctx.engine.in_flight = false;
     if (ctx.dirty) {
       ctx.engine.updated_at = nowIso();
       putEngine(ctx.projectId, ctx.engine);
       syncCardsMirror(ctx);
+      syncPipelineStage(ctx);
     }
   }
 }
 
+/// Only a pipeline card reaching done/wont_do can move the engine, so every
+/// other card transition on the board costs a single store read.
 export function onCardStepAfter(payload: any): string {
   const projectId = typeof payload?.project_id === "string" ? payload.project_id : "";
-  if (projectId) {
-    try {
-      runEngine(projectId);
-    } catch (_e) {
-      // runEngine already swallows its own errors into engine.note; this
-      // is defense in depth only — a hook must never trap the plugin.
+  const cardId = typeof payload?.card_id === "string" ? payload.card_id : "";
+  const newStep = typeof payload?.new_step === "string" ? payload.new_step : "";
+  if (!projectId || !cardId || (newStep !== "done" && newStep !== "wont_do")) return skip();
+  try {
+    const engine = getEngine(projectId);
+    if (Object.values(engine.units).some((u) => u.card_id === cardId && u.status === "open")) {
+      runEngine(projectId, newBudget(), { event: { card_id: cardId, new_step: newStep } });
     }
+  } catch (_e) {
+    // runEngine already swallows its own errors into engine.note; this
+    // is defense in depth only — a hook must never trap the plugin.
   }
   return skip();
 }
 
 export function onTimerTick(_payload: any): string {
   const deadline = Date.now() + TIMER_BUDGET_MS;
-  for (const projectId of listEngineProjects()) {
-    if (Date.now() >= deadline) break;
-    try {
-      const engine = getEngine(projectId);
+  try {
+    for (const { projectId, engine } of listEngines()) {
+      if (Date.now() >= deadline) break;
       if (engine.finished) continue;
-      runEngine(projectId, { deadline, createsLeft: MAX_CREATES_PER_RUN });
-    } catch (_e) {
-      // one project's failure must not stall every other project's tick.
+      try {
+        runEngine(projectId, { deadline, createsLeft: MAX_CREATES_PER_RUN }, { sweep: true });
+      } catch (_e) {
+        // one project's failure must not stall every other project's tick.
+      }
     }
+  } catch (_e) {
+    // listing engine docs failed; the next tick retries.
   }
   return skip();
 }
 
 // ── Owner/wizard actions (src/http.ts /pipeline/* routes) ────────────────
+
+/// The request is valid but the pipeline's current state doesn't allow it
+/// (wrong stage, a blocking card still open) — the routes answer 409.
+export class PipelineConflict extends Error {}
 
 /// Queue AI-generate-element cards for every requested element whose mode
 /// is "draft"/"generate" (default: every such element) and that isn't
@@ -626,20 +704,23 @@ export function requestStart(projectId: string): { ok: true } {
   if (!brief.basics || !brief.basics.chapter_count || brief.basics.chapter_count < 1) {
     throw new Error("basics.chapter_count must be at least 1");
   }
+  if (brief.basics.chapter_count > MAX_CHAPTERS) {
+    throw new Error(`basics.chapter_count must be at most ${MAX_CHAPTERS}`);
+  }
   const engine = getEngine(projectId);
-  if (engine.stage !== "setup") throw new Error(`pipeline already started (stage: ${engine.stage})`);
+  if (engine.stage !== "setup") throw new PipelineConflict(`pipeline already started (stage: ${engine.stage})`);
 
   for (const el of ELEMENT_KEYS) {
     const mode = brief.modes?.[el];
     if (mode !== "draft" && mode !== "generate") continue;
     const status = brief.status?.[el];
     if (status !== "approved") {
-      throw new Error(`${el} needs owner review before starting (status: ${status ?? "empty"})`);
+      throw new PipelineConflict(`${el} needs owner review before starting (status: ${status ?? "empty"})`);
     }
   }
   for (const unit of Object.values(engine.units)) {
     if (unit.kind === "generate" && unit.status === "open") {
-      throw new Error(`generate card for ${unit.element} is still running`);
+      throw new PipelineConflict(`generate card for ${unit.element} is still running`);
     }
   }
 
@@ -658,10 +739,10 @@ export function requestStart(projectId: string): { ok: true } {
 export function requestApprove(projectId: string): { ok: true } {
   const engine = getEngine(projectId);
   if (engine.stage !== "pilot_review") {
-    throw new Error(`cannot approve from stage '${engine.stage}' (must be pilot_review)`);
+    throw new PipelineConflict(`cannot approve from stage '${engine.stage}' (must be pilot_review)`);
   }
   const openPilotRevision = Object.values(engine.units).some((u) => u.kind === "revision" && u.chapter === 1 && u.status === "open");
-  if (openPilotRevision) throw new Error("a pilot revision is still open — wait for it to finish before approving");
+  if (openPilotRevision) throw new PipelineConflict("a pilot revision is still open — wait for it to finish before approving");
 
   engine.approved = true;
   engine.stage = "chapters";
@@ -691,7 +772,7 @@ export function requestFeedback(projectId: string, chapterArg: number | undefine
   if (typeof text !== "string" || text.trim() === "") throw new Error("text is required");
   const engine = getEngine(projectId);
   if (STAGES.indexOf(engine.stage) < STAGES.indexOf("pilot_review")) {
-    throw new Error(`cannot leave feedback before the pilot is written (stage: ${engine.stage})`);
+    throw new PipelineConflict(`cannot leave feedback before the pilot is written (stage: ${engine.stage})`);
   }
   const chapter = typeof chapterArg === "number" ? chapterArg : 1;
   if (chapter !== 1 && !getChapter(projectId, chapter)) {
@@ -721,7 +802,7 @@ export function requestRetry(projectId: string, unitId?: string): { ok: true; re
   if (unitId) {
     const unit = engine.units[unitId];
     if (!unit) throw new Error(`unknown unit '${unitId}'`);
-    if (unit.status !== "failed") throw new Error(`unit '${unitId}' is not failed (status: ${unit.status})`);
+    if (unit.status !== "failed") throw new PipelineConflict(`unit '${unitId}' is not failed (status: ${unit.status})`);
     targets = [unitId];
   } else {
     targets = Object.values(engine.units)

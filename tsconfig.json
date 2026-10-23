@@ -7,7 +7,7 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["@extism/js-pdk"]
+    "types": ["@extism/js-pdk", "node"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]
 }

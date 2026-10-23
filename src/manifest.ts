@@ -157,10 +157,10 @@ export function manifestJson(): string {
       {
         name: "story_update_state",
         description:
-          "Report pipeline progress: the current stage, its status, a short status note for " +
-          "the dashboard, and any structured data for the stage (e.g. which chapters are " +
-          "ready). Does not advance cards by itself — card.step.after / timer.tick drive the " +
-          "stage machine.",
+          "Report progress on a pipeline stage: its status, a short status note for the " +
+          "dashboard, and any structured data (e.g. an element draft). The current stage itself " +
+          "is owned by the plugin's stage machine (driven by card.step.after / timer.tick) — " +
+          "this tool never moves it.",
         input_schema: SCHEMAS.story_update_state,
         worker_allowed: true,
       },
