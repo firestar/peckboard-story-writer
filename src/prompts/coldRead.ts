@@ -56,8 +56,8 @@ export function renderColdReadCard(input: ColdReadCardInput): ColdReadCardSpec {
   const taskMd = [
     "## Task",
     "",
-    `1. Call ${COLD_READ_TOOLS.getText} {chapter: ${chapter}} to get this chapter's player-visible` +
-      ` text, plus chapters 1..${chapter - 1} as a player would see them.`,
+    `1. Call ${COLD_READ_TOOLS.getText} {chapter: ${chapter}} to get this chapter's player-visible text` +
+      (chapter > 1 ? `, plus chapters 1..${chapter - 1} as a player would see them.` : "."),
     "2. Read start to finish, once, cold — no re-reading to figure something out, no priming.",
     "3. Note every point of confusion: names or terms used before they're explained; an unclear" +
       " speaker or pronoun; unclear place, time or elapsed time; an unexplained motive; anything" +
@@ -91,8 +91,7 @@ export interface ColdReadFixCardInput {
 }
 
 // The craft needed to actually fix clarity issues, not just the checklist.
-const COLD_READ_FIX_LESSON_IDS = ["reader.intro-characters", "reader.openings", "reader.reader-knows", "reader.checking"];
-
+const COLD_READ_FIX_LESSON_IDS = ["reader.intro-characters", "reader.openings", "reader.reader-knows", "reader.checking", "reader.vn"];
 /// The writer, with full context, fixing every cold-read item. Unlike the
 /// cold-read card, this one gets the brief and the story's rules — the fix
 /// has to land inside the actual story's voice and continuity.

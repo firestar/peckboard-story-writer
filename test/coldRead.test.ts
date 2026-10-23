@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderColdReadCard, renderColdReadFixCard, COLD_READ_TOOLS, type PromptBrief } from "../src/prompts";
+import { renderLessons } from "../src/prompts/lessons";
+import { lessonsFor } from "../src/prompts/templates";
 
 const BRIEF: PromptBrief = {
   about: "ABOUT-MARK a hunter and her sister in a flooded city",
@@ -56,6 +58,11 @@ describe("renderColdReadCard", () => {
     expect(card.description).toContain("order of first appearance");
     expect(card.description).toContain("What counts as confusion");
   });
+
+  it("doesn't offer earlier chapters for chapter 1", () => {
+    expect(renderColdReadCard({ chapter: 1 }).description).not.toContain("chapters 1..0");
+    expect(renderColdReadCard({ chapter: 3 }).description).toContain("chapters 1..2");
+  });
 });
 
 describe("renderColdReadFixCard", () => {
@@ -79,5 +86,25 @@ describe("renderColdReadFixCard", () => {
   it("records the fault-is-the-text's rule (C2)", () => {
     const card = renderColdReadFixCard({ chapter: 1, brief: null, items: [] });
     expect(card.description).toContain("C2");
+  });
+});
+
+describe("reader V1/V2 are visual-novel only", () => {
+  for (const kind of ["pilot", "chapter"] as const) {
+    it(`${kind} lessons carry V1/V2 for vn and drop them for prose`, () => {
+      const vn = renderLessons(lessonsFor(kind, { chapter: 2, format: "vn" }), { format: "vn" });
+      const prose = renderLessons(lessonsFor(kind, { chapter: 2, format: "prose" }), { format: "prose" });
+      expect(vn).toContain("V1. Narrator first");
+      expect(vn).toContain("V2. A name plate is an introduction");
+      expect(prose).not.toContain("V1.");
+      expect(prose).not.toContain("V2.");
+      expect(prose).toContain("O1.");
+    });
+  }
+
+  it("the fix card follows the brief's format", () => {
+    const vnBrief: PromptBrief = { ...BRIEF, basics: { ...BRIEF.basics!, format: "vn" } };
+    expect(renderColdReadFixCard({ chapter: 2, brief: vnBrief, items: [] }).description).toContain("V1. Narrator first");
+    expect(renderColdReadFixCard({ chapter: 2, brief: BRIEF, items: [] }).description).not.toContain("V1.");
   });
 });
