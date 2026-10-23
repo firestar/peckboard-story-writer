@@ -237,4 +237,9 @@ the setup wizard (SW-5) and the pipeline dashboard (SW-6): manifest,
 hook/tool dispatch, the six story_* tools, the writing-lessons prompt pack
 with per-stage card templates, the card-driven pipeline engine, and the
 Story tab's wizard and live dashboard described above. Screenshots of the
-dashboard are in `docs/screenshots/sw6/`.
+dashboard (Playwright, local PeckBoard with the plugin installed) are
+`docs/screenshots/dashboard-*.png` — e.g.
+[the owner gate](docs/screenshots/dashboard-pilot-gate.png),
+[the chapter grid](docs/screenshots/dashboard-chapter-grid.png),
+[who knows what](docs/screenshots/dashboard-who-knows-what.png),
+[dark theme](docs/screenshots/dashboard-dark.png).
