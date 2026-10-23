@@ -110,8 +110,8 @@ export function manifestJson(): string {
           "Get this story's brief: the setup-wizard answers (title, genre, format, chapter " +
           "count, POV/tense, tone, audience/rating, premise, plot outline, setting/world, " +
           "characters, relationships, themes, endings/routes/choices, style rules, banned " +
-          "words), and any owner/review feedback recorded so far. Call this first in any " +
-          "story-writing or reviewing turn.",
+          "words), its current style rules, any owner/review feedback recorded so far, and the " +
+          "pipeline state. Call this first in any story-writing or reviewing turn.",
         input_schema: SCHEMAS.story_get_brief,
         worker_allowed: true,
       },

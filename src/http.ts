@@ -9,7 +9,7 @@
 import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
 import { listModels, requireProjectId } from "./host";
-import { getAllRecords, getBrief, getFeedback, getPipelineState, listChapters, listReviews, putBrief } from "./docs";
+import { getAllRecords, getBrief, getCards, getFeedback, getPipelineState, listChapters, listReviews, putBrief } from "./docs";
 import { Brief } from "./types";
 
 const PAGE_PATH = "/plugin-api/v1/story-writer";
@@ -81,6 +81,7 @@ function getState(): any {
     chapters,
     reviews: listReviews(projectId),
     feedback: getFeedback(projectId),
+    cards: getCards(projectId),
   };
 }
 

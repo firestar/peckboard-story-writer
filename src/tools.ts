@@ -13,13 +13,13 @@ import { SCHEMAS } from "./schemas";
 import {
   addFeedback,
   applyRecordsUpdate,
-  getAllRecords,
   getBrief,
   getChapter,
   getFeedback,
   getPipelineState,
   getRecordSection,
   getReview,
+  getRules,
   putBrief,
   putChapter,
   putPipelineState,
@@ -30,21 +30,6 @@ import {
 import { chapterFileName, writeBrief, writeChapter, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
 import { Brief, ChapterDoc, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, nowIso } from "./types";
 
-/// Validate a partial records update (section -> item[]): every key must be
-/// a known RECORD_SECTION and every value an array. Item shapes inside are
-/// deliberately not enforced here — writers/reviewers attach whatever
-/// fields make sense and the upsert-merge keeps the rest of each item intact.
-function validateRecordsUpdate(records: Record<string, unknown>): void {
-  for (const [key, value] of Object.entries(records)) {
-    if (!(RECORD_SECTIONS as readonly string[]).includes(key)) {
-      throw new Error(`records.${key}: unknown section (expected one of ${RECORD_SECTIONS.join(", ")})`);
-    }
-    if (!Array.isArray(value)) {
-      throw new Error(`records.${key}: must be an array`);
-    }
-  }
-}
-
 function mirrorChangedSections(projectId: string, sections: RecordSection[]): void {
   for (const section of sections) {
     writeRecordSection(section, getRecordSection(projectId, section));
@@ -54,12 +39,19 @@ function mirrorChangedSections(projectId: string, sections: RecordSection[]): vo
   }
 }
 
-/// Get this story's brief (setup-wizard answers) plus any feedback recorded
-/// so far. `null` brief means the wizard hasn't been run yet.
+/// Get this story's brief (setup-wizard answers), its durable style rules,
+/// feedback recorded so far, and the pipeline state. `null` brief means the
+/// wizard hasn't been run yet.
 export function toolGetBrief(args: any, _context: any): any {
   validate(SCHEMAS.story_get_brief, args ?? {});
   const projectId = requireProjectId();
-  return { brief: getBrief(projectId), feedback: getFeedback(projectId) };
+  // SW-3: prompt pack
+  return {
+    brief: getBrief(projectId),
+    rules: getRules(projectId),
+    feedback: getFeedback(projectId),
+    state: getPipelineState(projectId),
+  };
 }
 
 /// Get the story's living records (character sheets, relationships,
@@ -86,14 +78,16 @@ export function toolGetRecords(args: any, _context: any): any {
 }
 
 /// Upsert-merge a partial records update into storage and mirror the
-/// touched sections into story/records/.
+/// touched sections into story/records/. Item shapes are checked by the
+/// schema (RECORD_ITEM_SCHEMAS) before anything is written.
 export function toolSubmitRecords(args: any, _context: any): any {
   validate(SCHEMAS.story_submit_records, args);
-  validateRecordsUpdate(args.records);
   const projectId = requireProjectId();
   const changed = applyRecordsUpdate(projectId, args.records);
   mirrorChangedSections(projectId, changed);
-  return { ok: true, sections: changed };
+  const counts: Record<string, number> = {};
+  for (const section of changed) counts[section] = getRecordSection(projectId, section).length;
+  return { ok: true, sections: changed, counts };
 }
 
 /// Store a chapter's text (and optional recap / records update), bumping its
@@ -104,6 +98,11 @@ export function toolSubmitChapter(args: any, _context: any): any {
   const chapter: number = args.chapter;
   const markdown: string = args.markdown;
   const recap: string | null = typeof args.recap === "string" ? args.recap : null;
+
+  // Records first: a rejected item fails the call before the chapter lands.
+  if (args.records) {
+    mirrorChangedSections(projectId, applyRecordsUpdate(projectId, args.records));
+  }
 
   const existing = getChapter(projectId, chapter);
   const doc: ChapterDoc = {
@@ -119,14 +118,7 @@ export function toolSubmitChapter(args: any, _context: any): any {
   if (recap !== null) {
     const merged = upsertSection("recaps", getRecordSection(projectId, "recaps"), [{ chapter, recap }]);
     putRecordSection(projectId, "recaps", merged);
-    writeRecaps(merged as Recap[]);
-  }
-
-  let changedSections: RecordSection[] = [];
-  if (args.records && typeof args.records === "object" && !Array.isArray(args.records)) {
-    validateRecordsUpdate(args.records);
-    changedSections = applyRecordsUpdate(projectId, args.records);
-    mirrorChangedSections(projectId, changedSections);
+    mirrorChangedSections(projectId, ["recaps"]);
   }
 
   return { ok: true, path: `story/chapters/${chapterFileName(chapter)}`, revision: doc.revision };

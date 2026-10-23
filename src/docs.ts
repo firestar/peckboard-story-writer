@@ -6,10 +6,12 @@
 import { deleteDoc, getDoc, listDocs, putDoc } from "./store";
 import {
   Brief,
+  CardRef,
   ChapterDoc,
   Feedback,
-  PipelineState,
   RECORD_ID_KEY,
+  RECORD_REQUIRED_FIELDS,
+  RECORD_SECTIONS,
   RECORD_SECTIONS,
   Records,
   RecordSection,
@@ -32,6 +34,12 @@ export function getBrief(projectId: string): Brief | null {
 
 export function putBrief(projectId: string, brief: Brief): void {
   putDoc("brief", projectId, brief);
+}
+
+/// The story's durable style rules (wizard rules plus any appended by
+/// `story_report_review`'s `rule`); empty before the wizard has run.
+export function getRules(projectId: string): string[] {
+  return getBrief(projectId)?.elements?.style_rules ?? [];
 }
 
 // ── Records (one doc per section) ───────────────────────────────────────
@@ -74,15 +82,27 @@ export function upsertSection(section: RecordSection, existing: unknown[], incom
 /// Apply a partial records update (section -> item[]) to storage, upsert-
 /// merging each touched section. Returns the sections that changed.
 export function applyRecordsUpdate(projectId: string, update: Record<string, unknown>): RecordSection[] {
-  const changed: RecordSection[] = [];
+  // Merge every section first and write only once all pass, so a bad item
+  // in one section can't leave the others half-applied.
+  const merged: [RecordSection, unknown[]][] = [];
   for (const section of RECORD_SECTIONS) {
     const incoming = update[section];
     if (!Array.isArray(incoming)) continue;
     const existing = getRecordSection(projectId, section);
-    putRecordSection(projectId, section, upsertSection(section, existing, incoming));
-    changed.push(section);
+    const idKey = RECORD_ID_KEY[section];
+    incoming.forEach((item, i) => {
+      const id = (item as any)?.[idKey];
+      if (existing.some((e) => (e as any)?.[idKey] === id)) return;
+      for (const field of RECORD_REQUIRED_FIELDS[section]) {
+        if ((item as any)?.[field] === undefined) {
+          throw new Error(`records.${section}[${i}].${field}: required for a new item`);
+        }
+      }
+    });
+    merged.push([section, upsertSection(section, existing, incoming)]);
   }
-  return changed;
+  for (const [section, items] of merged) putRecordSection(projectId, section, items);
+  return merged.map(([section]) => section);
 }
 
 // ── Chapters ─────────────────────────────────────────────────────────────
@@ -128,6 +148,17 @@ export function getPipelineState(projectId: string): PipelineState {
 
 export function putPipelineState(projectId: string, state: PipelineState): void {
   putDoc("state", projectId, state);
+}
+
+// ── Pipeline cards (one doc per project holding the list) ──────────────────
+
+export function getCards(projectId: string): CardRef[] {
+  const value = getDoc("cards", projectId);
+  return Array.isArray(value) ? (value as CardRef[]) : [];
+}
+
+export function putCards(projectId: string, cards: CardRef[]): void {
+  putDoc("cards", projectId, cards);
 }
 
 // ── Feedback (one doc per project holding the append-only list) ──────────

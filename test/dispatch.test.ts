@@ -93,8 +93,8 @@ describe("dispatch: mcp.tool.invoke", () => {
     expect(result.error).toMatch(/project-scoped caller/);
   });
 
-  it("story_get_brief returns null brief and no feedback before the wizard has run", () => {
-    expect(invoke("story_get_brief")).toEqual({ brief: null, feedback: [] });
+  it("story_get_brief returns null brief, no rules/feedback, and the default state before the wizard has run", () => {
+    expect(invoke("story_get_brief")).toMatchObject({ brief: null, rules: [], feedback: [], state: { stage: "setup" } });
   });
 
   it("story_get_records returns every section, empty by default", () => {
@@ -105,6 +105,7 @@ describe("dispatch: mcp.tool.invoke", () => {
     expect(invoke("story_submit_records", { records: { characters: [{ id: "c1", name: "Ada" }] } })).toEqual({
       ok: true,
       sections: ["characters"],
+      counts: { characters: 1 },
     });
     expect(invoke("story_get_records")).toEqual({
       records: { ...EMPTY_RECORDS, characters: [{ id: "c1", name: "Ada" }] },
@@ -134,11 +135,37 @@ describe("dispatch: mcp.tool.invoke", () => {
   });
 
   it("story_submit_records rejects an unknown section", () => {
-    expect(invoke("story_submit_records", { records: { nope: [] } }).error).toMatch(/unknown section/);
+    expect(invoke("story_submit_records", { records: { nope: [] } }).error).toMatch(/records\.nope: unknown property/);
   });
 
   it("story_submit_records rejects a non-array section value", () => {
-    expect(invoke("story_submit_records", { records: { characters: { id: "c1" } } }).error).toMatch(/must be an array/);
+    expect(invoke("story_submit_records", { records: { characters: { id: "c1" } } }).error).toMatch(
+      /records\.characters: expected array/,
+    );
+  });
+
+  it("story_submit_records rejects an extra top-level field", () => {
+    expect(invoke("story_submit_records", { records: {}, extra: 1 }).error).toMatch(/args\.extra: unknown property/);
+  });
+
+  it("story_submit_records rejects an item missing its identity or with a wrongly typed field", () => {
+    expect(invoke("story_submit_records", { records: { characters: [{ name: "Ada" }] } }).error).toMatch(
+      /characters\[0\]\.id: required/,
+    );
+    expect(invoke("story_submit_records", { records: { recaps: [{ chapter: "1", recap: "x" }] } }).error).toMatch(
+      /recaps\[0\]\.chapter: expected integer/,
+    );
+  });
+
+  it("story_submit_records requires essential fields on new items only, and writes nothing on rejection", () => {
+    const bad = invoke("story_submit_records", {
+      records: { glossary: [{ term: "Ley", definition: "grid" }], characters: [{ id: "c1" }] },
+    });
+    expect(bad.error).toMatch(/records\.characters\[0\]\.name: required for a new item/);
+    expect(invoke("story_get_records").records).toEqual(EMPTY_RECORDS); // glossary not half-applied
+
+    invoke("story_submit_records", { records: { characters: [{ id: "c1", name: "Ada" }] } });
+    expect(invoke("story_submit_records", { records: { characters: [{ id: "c1", role: "lead" }] } }).ok).toBe(true);
   });
 
   it("story_submit_chapter requires chapter and markdown", () => {
@@ -188,7 +215,7 @@ describe("dispatch: mcp.tool.invoke", () => {
     expect(second.state.stage).toBe("pilot"); // stage persists when not re-specified
     expect(second.state.data).toEqual({ chapters_ready: 1 });
     expect(second.state.stages.pilot).toMatchObject({ status: "active", note: "drafting" });
-    expect(invoke("story_get_brief")).toEqual({ brief: null, feedback: [] }); // separate collection
+    expect(invoke("story_get_brief")).toMatchObject({ brief: null, feedback: [], state: { stage: "pilot" } }); // separate collection
   });
 
   it("story_report_review rejects a bad verdict", () => {
@@ -215,7 +242,7 @@ describe("dispatch: mcp.tool.invoke", () => {
 
   it("story_report_review with a pass verdict and no rule touches neither the brief nor feedback", () => {
     invoke("story_report_review", { chapter: 1, pass: "copyedit", verdict: "pass", notes: "clean" });
-    expect(invoke("story_get_brief")).toEqual({ brief: null, feedback: [] });
+    expect(invoke("story_get_brief")).toMatchObject({ brief: null, rules: [], feedback: [] });
   });
 
   it("story_report_review with a rule but no brief yet records feedback with appended_to_rules: false", () => {
@@ -233,7 +260,35 @@ describe("dispatch: mcp.tool.invoke", () => {
     invoke("story_report_review", { chapter: 3, pass: "copyedit", verdict: "pass", notes: "clean", rule: "No present-tense flashbacks." });
     const got = invoke("story_get_brief");
     expect(got.brief.elements.style_rules).toEqual(["No present-tense flashbacks."]);
+    expect(got.rules).toEqual(["No present-tense flashbacks."]);
     expect(got.feedback).toMatchObject([{ text: "No present-tense flashbacks.", appended_to_rules: true }]);
+    expect(files["story/brief.md"]).toContain("No present-tense flashbacks.");
+  });
+
+  it("story_submit_chapter rejects a bad records update before storing the chapter", () => {
+    const bad = invoke("story_submit_chapter", { chapter: 1, markdown: "# Ch1", records: { knowledge: [{ id: "k1" }] } });
+    expect(bad.error).toMatch(/knowledge\[0\]\.fact: required for a new item/);
+    expect(files["story/chapters/chapter-01.md"]).toBeUndefined();
+    expect(invoke("story_submit_chapter", { chapter: 1, markdown: "# Ch1" }).revision).toBe(1);
+  });
+
+  it("story_submit_chapter round-trips a chapter larger than one store doc", () => {
+    const markdown = "Été \"quoted\" \\ line\n".repeat(20_000); // ~420 KB > 256 KiB cap
+    expect(invoke("story_submit_chapter", { chapter: 0, markdown }).path).toBe("story/chapters/chapter-00.md");
+    expect(files["story/chapters/chapter-00.md"]).toBe(markdown);
+    const state = JSON.parse(
+      allowPayload(dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/state" })).body,
+    );
+    expect(state.chapters).toMatchObject([{ chapter: 0, revision: 1, length: markdown.length }]);
+  });
+
+  it("mirrors records and state into story/ as machine-readable JSON", () => {
+    invoke("story_submit_records", { records: { glossary: [{ term: "Ley", definition: "magic grid" }] } });
+    expect(JSON.parse(files["story/records/glossary.json"])).toEqual([{ term: "Ley", definition: "magic grid" }]);
+    invoke("story_update_state", { stage: "records", status: "done" });
+    expect(JSON.parse(files["story/state.json"])).toMatchObject({ stage: "records", stages: { records: { status: "done" } } });
+    invoke("story_submit_chapter", { chapter: 2, markdown: "x", recap: "Bo leaves." });
+    expect(JSON.parse(files["story/records/recaps.json"])).toEqual([{ chapter: 2, recap: "Bo leaves." }]);
   });
 });
 
@@ -281,6 +336,7 @@ describe("dispatch: http.request.authed (project UI routes)", () => {
     expect(body.chapters).toEqual([]);
     expect(body.reviews).toEqual([]);
     expect(body.feedback).toEqual([]);
+    expect(body.cards).toEqual([]);
   });
 
   it("GET models returns an empty list when the host declares none", () => {

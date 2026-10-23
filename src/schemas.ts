@@ -4,20 +4,59 @@
 // means a tool's declared contract and its enforced contract can't drift.
 
 import type { Schema } from "./validate";
-import { RECORD_SECTIONS, REVIEW_PASSES, STAGES, STAGE_STATUSES } from "./types";
+import { RECORD_ID_KEY, RECORD_SECTIONS, RecordSection, REVIEW_PASSES, STAGES, STAGE_STATUSES } from "./types";
 
 export const EMPTY_SCHEMA: Schema = { type: "object", properties: {}, additionalProperties: false };
 
-/// Record-section items are open-ended (writers/reviewers add fields like
-/// `notes` the schema doesn't enumerate) — only the top-level tool args are
-/// closed with `additionalProperties: false`.
+const ID: Schema = { type: "string", minLength: 1 };
+const TEXT: Schema = { type: "string" };
+const CHAPTER: Schema = { type: "integer", minimum: 0 };
+
+/// One item schema per record section. Only the identity field is required
+/// by the schema: an item updating an existing one may carry just its
+/// identity plus the changed fields. A NEW item must also carry
+/// `RECORD_REQUIRED_FIELDS[section]` — that depends on what is stored, so
+/// src/docs.ts `applyRecordsUpdate` checks it. Items are open-ended
+/// (writers/reviewers add fields like `notes`), so no
+/// `additionalProperties: false` here — only the top-level tool args and the
+/// section map are closed.
+function item(section: RecordSection, properties: Record<string, Schema>): Schema {
+  return { type: "object", properties, required: [RECORD_ID_KEY[section]] };
+}
+
+export const RECORD_ITEM_SCHEMAS: Record<RecordSection, Schema> = {
+  characters: item("characters", { id: ID, name: TEXT }),
+  relationships: item("relationships", { id: ID, a: TEXT, b: TEXT }),
+  knowledge: item("knowledge", {
+    id: ID,
+    fact: TEXT,
+    known_by: {
+      type: "array",
+      items: { type: "object", properties: { character: TEXT, since_chapter: CHAPTER }, required: ["character", "since_chapter"] },
+    },
+  }),
+  choices: item("choices", { id: ID, chapter: CHAPTER, options: { type: "array" } }),
+  setups: item("setups", { id: ID, promise: TEXT, setup_chapter: CHAPTER }),
+  glossary: item("glossary", { term: ID, definition: TEXT }),
+  chapter_state: item("chapter_state", { chapter: CHAPTER }),
+  scene_sheets: item("scene_sheets", { id: ID, chapter: CHAPTER, scene: TEXT }),
+  recaps: item("recaps", { chapter: CHAPTER, recap: TEXT }),
+};
+
 const RECORDS_UPDATE_SCHEMA: Schema = {
   type: "object",
+  properties: Object.fromEntries(
+    RECORD_SECTIONS.map((section) => [section, { type: "array", items: RECORD_ITEM_SCHEMAS[section] } as Schema]),
+  ),
+  additionalProperties: false,
   description:
     "Partial records update, keyed by section (characters, relationships, knowledge, choices, " +
     "setups, glossary, chapter_state, scene_sheets, recaps); each value is an array of items for " +
     "that section. Items with a matching identity (id, or `term`/`chapter` for glossary/chapter_state/" +
-    "recaps) merge over the existing item; others are appended.",
+    "recaps) merge over the existing item (send only the changed fields); others are appended and " +
+    "must carry the section's essential fields (characters: id+name, relationships: id+a+b, " +
+    "knowledge: id+fact+known_by, choices: id+chapter+options, setups: id+promise+setup_chapter, " +
+    "glossary: term+definition, scene_sheets: id+chapter+scene, recaps: chapter+recap).",
 };
 
 export const SCHEMAS = {

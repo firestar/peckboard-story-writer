@@ -235,6 +235,21 @@ export const RECORD_ID_KEY: Record<RecordSection, string> = {
   scene_sheets: "id",
   recaps: "chapter",
 };
+/// Fields a NEW item (no existing item with the same identity) must carry.
+/// Updates to an existing item only need the identity field — the rest
+/// shallow-merges over what is already stored.
+export const RECORD_REQUIRED_FIELDS: Record<RecordSection, string[]> = {
+  characters: ["id", "name"],
+  relationships: ["id", "a", "b"],
+  knowledge: ["id", "fact", "known_by"],
+  choices: ["id", "chapter", "options"],
+  setups: ["id", "promise", "setup_chapter"],
+  glossary: ["term", "definition"],
+  chapter_state: ["chapter"],
+  scene_sheets: ["id", "chapter", "scene"],
+  recaps: ["chapter", "recap"],
+};
+
 
 export function emptyRecords(): Records {
   return {
@@ -310,6 +325,19 @@ export interface PipelineState {
 
 export function defaultPipelineState(): PipelineState {
   return { stage: "setup", stages: {}, note: null, data: {}, updated_at: new Date(0).toISOString() };
+}
+
+// ── Pipeline cards ───────────────────────────────────────────────────────
+
+/// A board card the pipeline engine created for one unit of work (a stage,
+/// a chapter draft, a review pass), so it can track and advance it.
+export interface CardRef {
+  card_id: string;
+  stage: StageId;
+  kind: string;
+  chapter?: number;
+  pass?: ReviewPass;
+  created_at: string;
 }
 
 // ── Feedback ─────────────────────────────────────────────────────────────
