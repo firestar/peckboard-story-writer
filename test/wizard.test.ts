@@ -53,6 +53,38 @@ describe("GET /defaults", () => {
     // Doc-history parentheticals are trimmed from titles.
     expect(body.style_guide.find((e: any) => e.id === "system-voice").title).toBe("System / status window voice");
   });
+
+  it("groups the style guide and puts the §1D reader rules (introductions, banned openers) in it as new editable defaults", () => {
+    const { body } = authed("GET", "/defaults");
+    const byId = Object.fromEntries(body.style_guide.map((e: any) => [e.id, e]));
+    expect(byId["style.voice"]).toMatchObject({ group: "style", added: null });
+    expect(byId["english.conciseness"].group).toBe("english");
+    expect(byId["choices"].group).toBe("vn");
+    expect(byId["reader.intro-characters"]).toMatchObject({ group: "reader", added: "2026-10-23", title: "Introduce every character" });
+    expect(byId["reader.openings"].text).toMatch(/Banned openers/);
+    expect(byId["reader.opening-craft"].title).toBe("Opening craft");
+    expect(byId["reader.reader-knows"].title).toBe("What the reader knows");
+    expect(byId["reader.vn"].vn_only).toBe(true);
+    // Groups are contiguous, in display order.
+    const order = body.style_guide.map((e: any) => e.group).filter((g: string, i: number, a: string[]) => a.indexOf(g) === i);
+    expect(order).toEqual(["style", "reader", "english", "vn"]);
+  });
+
+  it("names the pipeline's models: the writer defaults to Claude Opus 5.5", () => {
+    const { body } = authed("GET", "/defaults");
+    expect(body.models.writer).toEqual({ id: "claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333", name: "Claude Opus 5.5", is_default: true });
+    expect(body.models.reviewer).toEqual({ id: null, name: null, is_default: true });
+
+    setHandlers({
+      ...docStore().handlers,
+      ...callerScope("proj-1"),
+      ...pluginSettings({ writer_model: "claude:sonnet@acc_x", reviewer_model: "claude:claude-opus-5-5@acc_y" }),
+      peckboard_list_models: () => ({ models: [{ id: "claude:claude-opus-5-5@acc_y", display_name: "[Work] Claude Opus 5.5" }] }),
+    });
+    const custom = authed("GET", "/defaults").body.models;
+    expect(custom.writer).toEqual({ id: "claude:sonnet@acc_x", name: "Sonnet", is_default: false });
+    expect(custom.reviewer).toEqual({ id: "claude:claude-opus-5-5@acc_y", name: "[Work] Claude Opus 5.5", is_default: false });
+  });
 });
 
 describe("POST /wizard (partial merge)", () => {

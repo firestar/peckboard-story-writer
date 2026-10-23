@@ -59,20 +59,29 @@ export function renderColdReadCard(input: ColdReadCardInput): ColdReadCardSpec {
     `1. Call ${COLD_READ_TOOLS.getText} {chapter: ${chapter}} to get this chapter's player-visible text` +
       (chapter > 1 ? `, plus chapters 1..${chapter - 1} as a player would see them.` : "."),
     "2. Read start to finish, once, cold — no re-reading to figure something out, no priming.",
-    "3. Note every point of confusion: names or terms used before they're explained; an unclear" +
-      " speaker or pronoun; unclear place, time or elapsed time; an unexplained motive; anything" +
-      " you had to guess or re-read to understand; any contradiction with what you read earlier.",
-    "4. Check the first three lines: can you say who the narrator is, what they want right now," +
+    "3. Note every point of confusion, each with a category: `unexplained` (a name or term used" +
+      " before it's explained), `speaker` (unclear speaker or pronoun), `orientation` (unclear" +
+      " place, time or elapsed time), `motive` (an unexplained motive), `reread` (anything you had" +
+      " to guess or re-read to understand), `contradiction` (contradicts what you read earlier)," +
+      " `other`.",
+    "4. Note every over-explained line as category `obvious`: a line that explains what every" +
+      " adult already knows (how phones, voicemail, doors, trains or routines work) or repeats what" +
+      " already follows from the line before or from common sense. Quote the line exactly.",
+    "5. For every item give `location` (where in the chapter, e.g. \"scene 2, third paragraph\")" +
+      " and, wherever you can, `quote` the exact words.",
+    "6. Check the first three lines: can you say who the narrator is, what they want right now," +
       " and what the tension is? If not, say so plainly.",
-    "5. List every character in order of first appearance, with exactly what the text said about" +
+    "7. List every character in order of first appearance, with exactly what the text said about" +
       " them at that point — not what you inferred or already knew.",
-    `6. Submit with ${COLD_READ_TOOLS.submitColdRead} {chapter: ${chapter}, items, first_three_lines, characters}.`,
+    `8. Submit with ${COLD_READ_TOOLS.submitColdRead} {chapter: ${chapter}, items: [{category, text, quote, location}], first_three_lines, characters}.`,
   ].join("\n");
 
   const doneMd = [
     "## Done when",
     "",
     "- [ ] Every point of confusion is reported, not silently resolved by re-reading",
+    "- [ ] Every over-explained line is reported as `obvious`, with its quote",
+    "- [ ] Every item has a category and a location",
     "- [ ] Characters are listed in order of first appearance with only what the text said",
     `- [ ] ${COLD_READ_TOOLS.submitColdRead} called`,
   ].join("\n");
@@ -95,8 +104,9 @@ const COLD_READ_FIX_LESSON_IDS = ["reader.intro-characters", "reader.openings", 
 /// The writer, with full context, fixing every cold-read item. Unlike the
 /// cold-read card, this one gets the brief and the story's rules — the fix
 /// has to land inside the actual story's voice and continuity. `items` are
-/// pre-formatted "id: text" lines (src/pipeline.ts `coldReadItemTexts`) so
-/// the writer can reference the same id in story_submit_cold_read_fixes.
+/// pre-formatted "id [category] (where): text" lines (src/pipeline.ts
+/// `coldReadItemTexts`) so the writer can reference the same id in
+/// story_submit_cold_read_fixes.
 export function renderColdReadFixCard(input: ColdReadFixCardInput): ColdReadCardSpec {
   const { chapter, brief, overrides = {}, items } = input;
   const fmt = formatOf(brief);
@@ -115,11 +125,14 @@ export function renderColdReadFixCard(input: ColdReadFixCardInput): ColdReadCard
     "## Task",
     "",
     "1. Read the brief and the records (story_get_brief, story_get_records).",
-    "2. Read the cold-read report above: every confusion item (each with its id) and the character first-appearance list.",
-    "3. Fix every item in the chapter text. C2: confusion is the text's fault, not the reader's —" +
+    "2. Read the cold-read report above: every item (each with its id, category and location) and the character first-appearance list.",
+    "3. Fix every confusion item in the chapter text. C2: confusion is the text's fault, not the reader's —" +
       " fix emphasis, order or clarity; never argue the point was already there.",
-    "4. Record item→fix: for each cold-read item above, note exactly what in the text changed.",
-    `5. Resubmit the fixed chapter with story_submit_chapter, then log the mapping with ${COLD_READ_TOOLS.submitFixes} ` +
+    "4. Fix every \"Over-explained / obvious\" item by cutting the quoted line, or by replacing the" +
+      " mechanics it explains with what the lead feels about them. Never explain it some other way.",
+    "5. Record item→fix: for each cold-read item above, note exactly what in the text changed" +
+      " (for an obvious item: \"cut\" or the line that replaced it).",
+    `6. Resubmit the fixed chapter with story_submit_chapter, then log the mapping with ${COLD_READ_TOOLS.submitFixes} ` +
       `{chapter: ${chapter}, fixes: [{item: "c1", fix: "..."}, ...]} — one entry per item id shown above.`,
   ].join("\n");
 
@@ -127,6 +140,7 @@ export function renderColdReadFixCard(input: ColdReadFixCardInput): ColdReadCard
     "## Done when",
     "",
     "- [ ] Every cold-read item is fixed in the text, not argued away",
+    "- [ ] Every over-explained line is cut or replaced with the feeling",
     "- [ ] Each item has a recorded fix",
     "- [ ] story_submit_chapter and " + COLD_READ_TOOLS.submitFixes + " called",
   ].join("\n");

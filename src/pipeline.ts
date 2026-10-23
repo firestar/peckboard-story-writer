@@ -52,6 +52,7 @@ import { PromptBrief, PromptFeedback, draftKey, renderCard } from "./prompts";
 import { renderColdReadCard, renderColdReadFixCard } from "./prompts/coldRead";
 import {
   DEFAULT_WRITER_MODEL,
+  COLD_READ_CATEGORY_LABELS,
   Brief,
   CardRef,
   ELEMENT_KEYS,
@@ -149,7 +150,10 @@ function unitMarker(id: string, attempt: number): string {
   return `<!-- story-writer:unit=${id}#${attempt} -->`;
 }
 
-function modelFor(role: "writer" | "reviewer"): string | undefined {
+/// The model the pipeline assigns to a role's cards: the plugin setting,
+/// else the writer default (reviewer cards fall back to the host default).
+/// Also shown in the setup wizard (GET /defaults).
+export function modelFor(role: "writer" | "reviewer"): string | undefined {
   const raw = getPluginSetting(role === "writer" ? "writer_model" : "reviewer_model");
   const trimmed = typeof raw === "string" && raw.trim() !== "" ? raw.trim() : undefined;
   return trimmed ?? (role === "writer" ? DEFAULT_WRITER_MODEL : undefined);
@@ -170,13 +174,16 @@ function createCardSafe(ctx: Ctx, input: CreateCardInput): Card {
   }
 }
 
-/// Cold-read-fix card items as "id: text" lines so the writer's
-/// story_submit_cold_read_fixes {fixes:[{item, fix}]} call can reference
-/// exactly the id shown on the card.
+/// Cold-read-fix card items as "id [category] (where): text ("quote")"
+/// lines so the writer's story_submit_cold_read_fixes {fixes:[{item, fix}]}
+/// call can reference exactly the id shown on the card.
 function coldReadItemTexts(projectId: string, chapter: number): string[] {
   const doc = getColdRead(projectId, chapter);
   if (!doc) return [];
-  return doc.items.map((i) => `${i.id}: ${i.text}${i.quote ? ` ("${i.quote}")` : ""}`);
+  return doc.items.map((i) => {
+    const label = COLD_READ_CATEGORY_LABELS[i.category ?? "other"] ?? i.category;
+    return `${i.id} [${label}]${i.location ? ` (${i.location})` : ""}: ${i.text}${i.quote ? ` ("${i.quote}")` : ""}`;
+  });
 }
 
 /// Turn a pending unit (status "open", no card yet) into a real card.

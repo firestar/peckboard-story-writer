@@ -10,10 +10,10 @@ import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
 import { listCards, listModels, requireProjectId } from "./host";
 import { getAllRecords, getBrief, getCards, getChapter, getEngine, getFeedback, getPipelineState, listChapters, listColdReads, listReviews, putBrief } from "./docs";
-import { MAX_CHAPTERS, PipelineConflict, assembleExport, requestApprove, requestFeedback, requestGenerate, requestRetry, requestStart } from "./pipeline";
+import { MAX_CHAPTERS, PipelineConflict, assembleExport, modelFor, requestApprove, requestFeedback, requestGenerate, requestRetry, requestStart } from "./pipeline";
 import { DEFAULT_BANNED, styleGuide } from "./prompts";
 import { mergeWizardUpdate, normalizeBrief } from "./wizard";
-import { ELEMENT_KEYS, ELEMENT_MODE_LABELS, defaultBrief } from "./types";
+import { DEFAULT_WRITER_MODEL, ELEMENT_KEYS, ELEMENT_MODE_LABELS, defaultBrief } from "./types";
 
 const PAGE_PATH = "/plugin-api/v1/story-writer";
 const API = "/api/plugin-ui/story-writer";
@@ -191,7 +191,8 @@ function queryParam(query: string, key: string): string | null {
 
 /// Static wizard catalog: the starting brief, the editable built-in style
 /// guide (lessons the owner can rewrite or turn off per story), the
-/// always-banned words, and the chapter cap.
+/// always-banned words, the chapter cap, and which models the pipeline's
+/// cards will run on (plugin settings, shown read-only).
 function getDefaults(): any {
   return {
     brief: defaultBrief(),
@@ -200,9 +201,39 @@ function getDefaults(): any {
     style_guide: styleGuide(),
     banned_words: DEFAULT_BANNED,
     max_chapters: MAX_CHAPTERS,
+    models: pipelineModels(),
   };
 }
 
+/// "claude:claude-opus-5-5@acc_…" -> "Claude Opus 5.5" when the host's model
+/// list doesn't name it (an account that's offline, a model since removed).
+function modelName(id: string): string {
+  const bare = id.replace(/^[^:]*:/, "").replace(/@.*$/, "");
+  const words: string[] = [];
+  for (const part of bare.split(/[-_\s]+/).filter(Boolean)) {
+    const prev = words.length - 1;
+    if (/^\d+$/.test(part) && prev >= 0 && /\d$/.test(words[prev])) words[prev] += `.${part}`;
+    else words.push(part.charAt(0).toUpperCase() + part.slice(1));
+  }
+  return words.join(" ") || id;
+}
+
+function pipelineModels(): any {
+  let known: { id: string; display_name: string }[] = [];
+  try {
+    known = listModels();
+  } catch (_e) {
+    // models_read unavailable: fall back to names derived from the ids
+  }
+  const describe = (id: string | undefined, isDefault: boolean) => {
+    if (!id) return { id: null, name: null, is_default: isDefault };
+    const hit = known.find((m) => m.id === id);
+    return { id, name: hit?.display_name || modelName(id), is_default: isDefault };
+  };
+  const writer = modelFor("writer");
+  const reviewer = modelFor("reviewer");
+  return { writer: describe(writer, writer === DEFAULT_WRITER_MODEL), reviewer: describe(reviewer, !reviewer) };
+}
 /// Merge the wizard's partial brief update (only the fields the owner
 /// changed) over the stored brief — see src/wizard.ts for the rules. Once
 /// the pipeline has started, the story's shape (format, chapter count) is

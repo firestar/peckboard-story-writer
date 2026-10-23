@@ -448,40 +448,57 @@ export function packLessons(overrides: Record<string, string> = {}): string {
 }
 
 /// The style-guide sections the setup wizard shows as editable defaults
-/// ("style rules"): the owner-approved v2 style blocks, the English-quality
-/// rules, and — for visual novels — choice labels and the system voice.
-/// Edits land in `brief.lesson_overrides` and reach every card through
-/// renderLessons.
-export const STYLE_GUIDE_IDS = [
-  "style.voice",
-  "style.flow",
-  "style.scene-logic",
-  "style.dialogue",
-  "style.humour",
-  "style.drama",
-  "english.intro",
-  "english.conciseness",
-  "english.variety",
-  "english.grammar",
-  "choices",
-  "system-voice",
-] as const;
+/// ("style rules"), in display order and grouped: the owner-approved v2
+/// style blocks, §1D (introducing characters, openings and banned openers,
+/// the reader's point of view), the English-quality rules, and — for
+/// visual novels — choice labels and the system voice. Edits land in
+/// `brief.lesson_overrides` and reach every card through renderLessons.
+/// `added` dates the owner updates the wizard flags as new.
+const STYLE_GUIDE: ReadonlyArray<{ id: string; group: StyleGuideGroup; added?: string }> = [
+  { id: "style.voice", group: "style" },
+  { id: "style.flow", group: "style" },
+  { id: "style.scene-logic", group: "style" },
+  { id: "style.dialogue", group: "style" },
+  { id: "style.humour", group: "style" },
+  { id: "style.drama", group: "style" },
+  { id: "reader.intro-characters", group: "reader", added: "2026-10-23" },
+  { id: "reader.openings", group: "reader", added: "2026-10-23" },
+  { id: "reader.opening-craft", group: "reader", added: "2026-10-23" },
+  { id: "reader.reader-knows", group: "reader", added: "2026-10-23" },
+  { id: "reader.mystery", group: "reader", added: "2026-10-23" },
+  { id: "reader.checking", group: "reader", added: "2026-10-23" },
+  { id: "reader.feelings", group: "reader", added: "2026-10-23" },
+  { id: "reader.vn", group: "reader", added: "2026-10-23" },
+  { id: "english.intro", group: "english" },
+  { id: "english.conciseness", group: "english" },
+  { id: "english.variety", group: "english" },
+  { id: "english.grammar", group: "english" },
+  { id: "choices", group: "vn" },
+  { id: "system-voice", group: "vn" },
+];
+
+export const STYLE_GUIDE_IDS: readonly string[] = STYLE_GUIDE.map((e) => e.id);
+
+export type StyleGuideGroup = "style" | "reader" | "english" | "vn";
 
 export interface StyleGuideEntry {
   id: string;
   title: string;
   text: string;
   vn_only: boolean;
+  group: StyleGuideGroup;
+  added: string | null;
 }
 
 export function styleGuide(): StyleGuideEntry[] {
   const all = lessons();
-  return STYLE_GUIDE_IDS.map((id) => {
+  return STYLE_GUIDE.map(({ id, group, added }) => {
     const lesson = all.get(id);
     if (!lesson) throw new Error(`unknown lesson id: ${id}`);
-    // Doc headings carry history or a summary after the name ("(kept from
-    // v1, works)", "Humour: none written."); the wizard shows the plain name.
+    // Doc headings carry history, codes or a summary after the name ("(kept
+    // from v1, works)", "(O1–O6, X1)", "Humour: none written."); the wizard
+    // shows the plain name.
     const title = id === "english.intro" ? "English quality" : lesson.title.replace(/\s*\(.*\)\s*$/, "").replace(/\s*:.*$/, "");
-    return { id, title, text: lesson.text, vn_only: lesson.vnOnly };
+    return { id, title, text: lesson.text, vn_only: lesson.vnOnly, group, added: added ?? null };
   });
 }

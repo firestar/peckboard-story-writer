@@ -4,7 +4,7 @@
 // means a tool's declared contract and its enforced contract can't drift.
 
 import type { Schema } from "./validate";
-import { MAX_UNEXPLAINED_PER_SCENE, RECORD_ID_KEY, RECORD_SECTIONS, RecordSection, REVIEW_PASSES, STAGES, STAGE_STATUSES } from "./types";
+import { COLD_READ_CATEGORIES, MAX_UNEXPLAINED_PER_SCENE, RECORD_ID_KEY, RECORD_SECTIONS, RecordSection, REVIEW_PASSES, STAGES, STAGE_STATUSES } from "./types";
 
 export const EMPTY_SCHEMA: Schema = { type: "object", properties: {}, additionalProperties: false };
 
@@ -177,10 +177,24 @@ export const SCHEMAS = {
         type: "array",
         items: {
           type: "object",
-          properties: { text: { type: "string", minLength: 1 }, quote: TEXT },
-          required: ["text"],
+          properties: {
+            category: {
+              type: "string",
+              enum: COLD_READ_CATEGORIES,
+              description:
+                "unexplained = name/term used before it's explained; speaker = unclear speaker or pronoun; " +
+                "orientation = unclear place, time or elapsed time; motive = unexplained motive; reread = had " +
+                "to guess or re-read; contradiction = contradicts earlier text; other = any other confusion; " +
+                "obvious = over-explained: the line explains what every adult already knows or repeats what " +
+                "follows from the line before (quote it).",
+            },
+            text: { type: "string", minLength: 1 },
+            quote: TEXT,
+            location: { type: "string", description: "Where in the chapter (e.g. \"scene 2, third paragraph\")." },
+          },
+          required: ["category", "text"],
         },
-        description: "Every point of confusion found on a single cold read.",
+        description: "Every point of confusion found on a single cold read, plus every over-explained line (category obvious).",
       },
       first_three_lines: {
         type: "object",

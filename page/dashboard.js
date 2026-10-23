@@ -46,6 +46,7 @@ const CELL_ICON = {
   done: "check",
   passed: "check",
   changes: "alert",
+  flagged: "alert",
   failed: "x",
   missing: "alert",
   blocked: "lock",
@@ -61,15 +62,17 @@ const LEGEND = [
   ["working", "busy", "Working"],
   ["waiting", "muted", "Waiting"],
   ["blocked", "warn", "Blocked"],
-  ["changes", "warn", "Changes requested"],
+  ["changes", "warn", "Changes requested / items found"],
   ["failed", "err", "Failed"],
   ["pending", "muted", "Not started"],
 ];
 
 const TABS = [
   { id: "characters", label: "Characters" },
+  { id: "coldreads", label: "Cold reads" },
   { id: "emotions", label: "Emotions & attitudes" },
   { id: "knowledge", label: "Who knows what" },
+  { id: "unexplained", label: "Unexplained names" },
   { id: "setups", label: "Setups & payoffs" },
   { id: "choices", label: "Choices map", vn: true },
   { id: "glossary", label: "Glossary" },
@@ -79,6 +82,7 @@ const TABS = [
 
 const DRAWER_TABS = [
   { id: "text", label: "Text" },
+  { id: "cold", label: "Cold read" },
   { id: "reviews", label: "Reviews" },
   { id: "scenes", label: "Scenes" },
   { id: "feedback", label: "Feedback" },
@@ -180,6 +184,10 @@ export function mountDashboard(container, opts) {
   let kAsOf = "latest";
   let setupFilter = "all";
   let glossaryQ = "";
+  let crChapter = null; // records tab: null = the first chapter with open items
+  let crCategory = "all"; // cold-read filters, shared by the drawer and the records tab
+  let crStatus = "all";
+  let unexFilter = "all";
   let notice = null; // {tone, text}
   let confirming = false; // the Approve confirmation is showing
   const busy = new Set(); // "approve", "export", "retry:<id>", "fb:<n>"
@@ -249,7 +257,7 @@ export function mountDashboard(container, opts) {
     if (destroyed) return;
     // A picked stage is about the moment; once the pipeline moves on, the
     // stage detail follows the new current stage again.
-    if (D.engineOf(next).stage !== D.engineOf(state).stage) stageSel = null;
+    if (D.currentStep(next) !== D.currentStep(state)) stageSel = null;
     state = next;
     refreshedAt = new Date();
     const sig = unitSignature(state);
@@ -669,7 +677,11 @@ export function mountDashboard(container, opts) {
           class: "sw-btn",
           type: "button",
           disabled: !g.canApprove || approving,
-          title: g.openPilotRevision ? "A pilot revision is still open — approve once it's in." : null,
+          title: g.openPilotRevision
+            ? "A pilot revision is still open — approve once it's in."
+            : !g.coldClear
+              ? "Opens once every cold-read item on the pilot is fixed."
+              : null,
           dataset: { fid: `${where}.approve` },
           onclick: () => {
             confirming = true;
@@ -683,8 +695,25 @@ export function mountDashboard(container, opts) {
     ];
   }
 
+  /// What the pilot's cold read found, in a phrase: "2 confusion items and 1
+  /// over-explained line".
+  function coldFound(p) {
+    const parts = [];
+    if (p.confusion.total) parts.push(plural(p.confusion.total, "confusion item"));
+    if (p.obvious.total) parts.push(plural(p.obvious.total, "over-explained line"));
+    return parts.join(" and ");
+  }
+
+  function gateColdLine(g) {
+    const p = g.cold;
+    if (!p.doc) return null;
+    const text = p.total ? `Cold read: ${coldFound(p)} found — ${p.open ? `${p.fixed} of ${p.total} fixed` : "all fixed"}.` : "Cold read: a fresh reader found nothing to fix.";
+    return h("span", { class: `sw-gate-cold ${p.open ? "open" : "clear"}` }, icon(p.open ? "alert" : "check"), text);
+  }
+
   function buildGate() {
     const g = D.gateInfo(state);
+    if (g.notReady) return buildGateNotReady(g);
     if (!g.active) return null;
     const text = g.openPilotRevision
       ? [h("strong", null, "The pilot is being revised from your feedback. "), "Read the new version once it's in, then approve it or send more feedback."]
@@ -698,7 +727,13 @@ export function mountDashboard(container, opts) {
       "section",
       { class: "sw-gate", "aria-label": "Your review" },
       h("span", { class: "sw-gate-icon", html: ICON.user }),
-      h("div", { class: "sw-gate-text" }, h("span", { class: "sw-kicker" }, g.openPilotRevision ? "Your review · revision running" : "Waiting on you"), h("p", null, text)),
+      h(
+        "div",
+        { class: "sw-gate-text" },
+        h("span", { class: "sw-kicker" }, g.openPilotRevision ? "Your review · revision running" : "Waiting on you"),
+        h("p", null, text),
+        gateColdLine(g),
+      ),
       h(
         "div",
         { class: "sw-gate-actions" },
@@ -710,6 +745,49 @@ export function mountDashboard(container, opts) {
           "Send feedback",
         ),
         approveControls("gate"),
+      ),
+    );
+  }
+
+  /// The pilot is written but its cold read (C1) and fixes (C2) haven't
+  /// cleared: shown as not ready — readable, not approvable.
+  function buildGateNotReady(g) {
+    const p = g.cold;
+    const failed = (p.read && p.read.status === "failed") || (p.fix && p.fix.status === "failed");
+    let detail;
+    if (failed) detail = "The cold-read chain stopped — retry the failed card below to carry on.";
+    else if (!p.read || p.read.status !== "done")
+      detail = "A fresh reader who has never seen the brief, records or cards is cold-reading it first, as a player would.";
+    else detail = `The writer is fixing what the cold reader found (${coldFound(p)}): ${p.fixed} of ${p.total} fixed. Approving opens once every item is fixed.`;
+    return h(
+      "section",
+      { class: `sw-gate not-ready${failed ? " failed" : ""}`, "aria-label": "Your review — not ready yet" },
+      h("span", { class: "sw-gate-icon", html: failed ? ICON.alert : ICON.clock }),
+      h(
+        "div",
+        { class: "sw-gate-text" },
+        h("span", { class: "sw-kicker" }, "Your review · not ready yet"),
+        h("p", null, h("strong", null, "The pilot is written, but it isn't ready for your review. "), detail),
+        p.total ? h("div", { class: "sw-gate-meter" }, meter(p.fixed, p.total, "Cold-read items fixed")) : null,
+      ),
+      h(
+        "div",
+        { class: "sw-gate-actions" },
+        h("button", { class: "sw-btn secondary", type: "button", dataset: { fid: "gate.read" }, onclick: () => openChapter(1, "text", "gate.read") }, icon("book"), "Read pilot"),
+        p.doc
+          ? h(
+              "button",
+              { class: "sw-btn secondary", type: "button", dataset: { fid: "gate.cold" }, onclick: () => openChapter(1, "cold", "gate.cold") },
+              icon("search"),
+              "Cold-read report",
+            )
+          : null,
+        h(
+          "button",
+          { class: "sw-btn", type: "button", disabled: true, title: "Opens once the pilot's cold read is done and every item is fixed.", dataset: { fid: "gate.approve" } },
+          icon("lock"),
+          "Approve pilot…",
+        ),
       ),
     );
   }
@@ -771,7 +849,7 @@ export function mountDashboard(container, opts) {
 
   function buildStats(summaries) {
     const o = D.overall(state);
-    const current = summaries.find((s) => s.id === D.engineOf(state).stage) || null;
+    const current = summaries.find((s) => s.id === D.currentStep(state)) || null;
     const units = Object.values(D.engineOf(state).units).filter((u) => u.kind !== "generate");
     const open = units.filter((u) => u.status === "open").length;
     const working = cards ? units.filter((u) => D.unitStatus(u, cards).key === "working").length : null;
@@ -793,7 +871,7 @@ export function mountDashboard(container, opts) {
   // ── pipeline ───────────────────────────────────────────────────────────
 
   function buildPipeline(summaries) {
-    const current = D.engineOf(state).stage;
+    const current = D.currentStep(state);
     const sel = stageSel || (current === "setup" ? "records" : current);
     const s = summaries.find((x) => x.id === sel) || summaries[0];
     return h(
@@ -837,7 +915,7 @@ export function mountDashboard(container, opts) {
           "span",
           { class: "sw-step-text" },
           h("span", { class: "sw-step-label" }, x.label),
-          h("span", { class: "sw-step-sub" }, x.sub || D.STAGE_STATUS_LABEL[x.status]),
+          h("span", { class: "sw-step-sub", title: x.sub || null }, x.sub || D.STAGE_STATUS_LABEL[x.status]),
           h("span", { class: "sw-sr" }, ` — ${D.STAGE_STATUS_LABEL[x.status]}`),
         ),
       ),
@@ -850,6 +928,12 @@ export function mountDashboard(container, opts) {
     let actions = null;
     if (s.id === "pilot_review" && g.active) {
       actions = h("div", { class: "sw-stage-actions" }, h("button", { class: "sw-btn secondary", type: "button", onclick: () => openChapter(1, "text") }, icon("book"), "Read pilot"));
+    } else if ((s.id === "cold_read" || s.id === "cold_fix") && g.cold.doc) {
+      actions = h(
+        "div",
+        { class: "sw-stage-actions" },
+        h("button", { class: "sw-btn secondary", type: "button", dataset: { fid: `stage.${s.id}.report` }, onclick: () => openChapter(1, "cold", `stage.${s.id}.report`) }, icon("search"), "Cold-read report"),
+      );
     } else if (s.id === "final" && engine.finished) {
       actions = h("div", { class: "sw-stage-actions" }, h("button", { class: "sw-btn", type: "button", disabled: busy.has("export"), onclick: exportStory }, icon("download"), "Download manuscript"));
     }
@@ -877,6 +961,9 @@ export function mountDashboard(container, opts) {
     const prev = D.STAGES[D.STAGES.findIndex((x) => x.id === s.id) - 1];
     if (s.id === "pilot_review") return "No revisions yet. Feedback you send on the pilot or any chapter shows up here as a revision card.";
     if (s.id === "final") return engine.finished ? null : "Unlocks once every chapter has been through every review pass.";
+    if ((s.id === "cold_read" || s.id === "cold_fix") && s.status === "done" && s.sub === "Not run")
+      return "Not run for this story — its pilot reached your review before cold reads were part of the pipeline.";
+    if (s.id === "cold_fix" && s.sub === "Nothing to fix") return "The cold reader reported nothing to fix, so no fix card was needed.";
     if (s.status === "pending") return prev ? `Starts after ${prev.label.toLowerCase()}.` : "Not started yet.";
     if (s.id === "chapters" && s.total === 0) return "This story has a single chapter — the pilot.";
     return "The first card is being created…";
@@ -944,7 +1031,7 @@ export function mountDashboard(container, opts) {
         "td",
         null,
         u.chapter
-          ? h("button", { class: "sw-linkbtn", type: "button", dataset: { fid }, onclick: () => openChapter(u.chapter, u.kind === "review" ? "reviews" : "text", fid) }, label)
+          ? h("button", { class: "sw-linkbtn", type: "button", dataset: { fid }, onclick: () => openChapter(u.chapter, drawerTabFor(u), fid) }, label)
           : h("span", { class: "sw-unit-name" }, label),
         u.attempt > 1 ? h("span", { class: "sw-muted sw-unit-attempt" }, ` · attempt ${u.attempt}`) : null,
       ),
@@ -958,6 +1045,12 @@ export function mountDashboard(container, opts) {
       h("td", null, statusBadge(st), st.detail ? h("div", { class: "sw-unit-detail", title: st.detail }, st.detail) : null),
       h("td", { class: "sw-unit-actions" }, sessionBtn(st.sessionId), u.status === "failed" ? retryBtn(u) : null),
     );
+  }
+
+  function drawerTabFor(u) {
+    if (u.kind === "review") return "reviews";
+    if (u.kind === "cold_read" || u.kind === "cold_read_fix") return "cold";
+    return "text";
   }
 
   // ── chapter grid ───────────────────────────────────────────────────────
@@ -994,7 +1087,11 @@ export function mountDashboard(container, opts) {
     return h(
       "section",
       { class: "sw-panel sw-dash-panel", "aria-labelledby": "sw-h-chapters" },
-      panelHead("sw-h-chapters", "Chapters", "Draft and review progress per chapter. Pick a chapter to read it, see its reviews or send feedback."),
+      panelHead(
+        "sw-h-chapters",
+        "Chapters",
+        "Draft, cold read and review progress per chapter. Pick a chapter to read it, see its cold read and reviews, or send feedback.",
+      ),
       legend,
       h(
         "div",
@@ -1010,12 +1107,15 @@ export function mountDashboard(container, opts) {
               null,
               h("th", { scope: "col", rowspan: "2", class: "sw-cgrid-ch" }, "Chapter"),
               h("th", { scope: "col", rowspan: "2" }, "Draft"),
+              h("th", { scope: "colgroup", colspan: "2", class: "sw-cgrid-group sw-cgrid-cold" }, "Cold read"),
               h("th", { scope: "colgroup", colspan: String(D.PASSES.length), class: "sw-cgrid-group" }, "Review passes"),
               h("th", { scope: "col", rowspan: "2", class: "sw-cgrid-notes" }, "Notes"),
             ),
             h(
               "tr",
               null,
+              h("th", { scope: "col", class: "sw-cgrid-pass sw-cgrid-cold", title: "A fresh reader reads the chapter cold, as a player would" }, "Read"),
+              h("th", { scope: "col", class: "sw-cgrid-pass sw-cgrid-cold-end", title: "The writer fixes every item the cold reader found" }, "Fixes"),
               D.PASSES.map((p) => h("th", { scope: "col", class: "sw-cgrid-pass", title: `${p.label} pass` }, p.short)),
             ),
           ),
@@ -1038,6 +1138,8 @@ export function mountDashboard(container, opts) {
                   ),
                 ),
                 h("td", null, cellBtn(r.chapter, "Draft", r.draft, "text")),
+                h("td", { class: "sw-cgrid-cold" }, cellBtn(r.chapter, "Cold read", r.cold, "cold")),
+                h("td", { class: "sw-cgrid-cold-end" }, cellBtn(r.chapter, "Cold-read fixes", r.fix, "cold")),
                 r.passes.map((c, i) => h("td", null, cellBtn(r.chapter, `${D.PASSES[i].label} pass`, c, "reviews"))),
                 h(
                   "td",
@@ -1099,6 +1201,10 @@ export function mountDashboard(container, opts) {
     switch (id) {
       case "characters":
         return D.castOf(state).list.length;
+      case "coldreads":
+        return D.coldReadChapters(state).length;
+      case "unexplained":
+        return D.unexplainedList(state).counts.total;
       case "emotions":
         return (r.chapter_state || []).length;
       case "knowledge":
@@ -1202,6 +1308,10 @@ export function mountDashboard(container, opts) {
         return recapsPanel();
       case "rules":
         return rulesPanel();
+      case "coldreads":
+        return coldReadsPanel();
+      case "unexplained":
+        return unexplainedPanel();
       default:
         return null;
     }
@@ -1211,10 +1321,41 @@ export function mountDashboard(container, opts) {
     const { source, list } = D.castOf(state);
     if (!list.length) return empty("No character sheets yet. The records stage builds them before the first chapter is written.");
     const resolve = D.characterResolver(list);
+    const introduced = list.filter((c) => D.firstIntro(c)).length;
     return [
-      source === "brief" ? h("p", { class: "sw-panel-note" }, "From the setup — the records stage hasn't produced character sheets yet.") : null,
+      source === "brief"
+        ? h("p", { class: "sw-panel-note" }, "From the setup — the records stage hasn't produced character sheets yet.")
+        : h(
+            "p",
+            { class: "sw-panel-note" },
+            h("strong", null, `${introduced} of ${plural(list.length, "character")} introduced in the text so far. `),
+            "The chapter that first names someone records where (chapter and scene) and the exact line that tells the reader who they are.",
+          ),
       h("div", { class: "sw-chars" }, list.map((c) => charCard(c, resolve))),
     ];
+  }
+
+  /// Where and how the text first introduced a character (chapter, scene,
+  /// the exact line), or that it hasn't yet.
+  function introBlock(c) {
+    const f = D.firstIntro(c);
+    const fid = `intro.${c.id || c.name}`;
+    return h(
+      "div",
+      { class: `sw-intro${f ? "" : " none"}` },
+      h("span", { class: "sw-setup-k" }, "First introduction"),
+      f
+        ? [
+            h(
+              "div",
+              { class: "sw-intro-where" },
+              h("button", { class: "sw-linkbtn", type: "button", dataset: { fid }, onclick: () => openChapter(f.chapter, "text", fid) }, `Chapter ${f.chapter}`),
+              f.scene ? h("span", null, ` · ${f.scene}`) : null,
+            ),
+            f.line ? h("blockquote", { class: "sw-intro-line" }, f.line) : null,
+          ]
+        : h("p", { class: "sw-muted" }, "Not introduced in the text yet."),
+    );
   }
 
   function charCard(c, resolve) {
@@ -1242,6 +1383,7 @@ export function mountDashboard(container, opts) {
         c.initial_emotion ? h("span", { class: "sw-badge", title: "Initial emotion" }, c.initial_emotion) : null,
       ),
       c.personality ? h("p", { class: "sw-char-lede" }, c.personality) : null,
+      introBlock(c),
       pairs.length ? h("dl", { class: "sw-facts" }, pairs.map(([k, v]) => h("div", null, h("dt", null, k), h("dd", null, v)))) : null,
       attitudes.length
         ? h(
@@ -1259,6 +1401,322 @@ export function mountDashboard(container, opts) {
         : null,
       knows.length ? h("div", { class: "sw-char-sec" }, h("h4", { class: "sw-subhead" }, "Knows"), h("ul", { class: "sw-bullets" }, knows.map((k) => h("li", null, k)))) : null,
       c.notes ? h("p", { class: "sw-muted sw-char-notes" }, c.notes) : null,
+    );
+  }
+
+  // ── cold reads (C1/C2) ─────────────────────────────────────────────────
+
+  function coldReadsPanel() {
+    const chapters = D.coldReadChapters(state);
+    if (!chapters.length) {
+      return empty(
+        "No cold reads yet. Every chapter, pilot included, is read once by a fresh reader who has never seen the brief, records or cards — as a player would — and every item they report is fixed before the chapter moves on.",
+      );
+    }
+    const sel = crChapter !== null && chapters.includes(crChapter) ? crChapter : (chapters.find((c) => D.coldReadProgress(state, c).open > 0) ?? chapters[0]);
+    const count = (k) => (k.total ? [String(k.total), h("span", { class: "sw-muted" }, k.fixed === k.total ? " · all fixed" : ` · ${k.fixed} fixed`)] : h("span", { class: "sw-muted" }, "0"));
+    return [
+      h(
+        "div",
+        { class: "sw-table-wrap", dataset: { scrollKey: "cr-overview" } },
+        h(
+          "table",
+          { class: "sw-table sw-cr-overview" },
+          h(
+            "thead",
+            null,
+            h(
+              "tr",
+              null,
+              h("th", { scope: "col" }, "Chapter"),
+              h("th", { scope: "col" }, "Cold read"),
+              h("th", { scope: "col" }, "Confusion"),
+              h("th", { scope: "col" }, "Over-explained"),
+              h("th", { scope: "col" }, "Fixes"),
+              h("th", { scope: "col" }, "First three lines"),
+            ),
+          ),
+          h(
+            "tbody",
+            null,
+            chapters.map((c) => {
+              const p = D.coldReadProgress(state, c);
+              const f = p.doc && p.doc.first_three_lines;
+              const ok = f ? [f.narrator, f.want, f.tension, f.clear].filter(Boolean).length : null;
+              return h(
+                "tr",
+                { class: c === sel ? "sel" : null },
+                h(
+                  "th",
+                  { scope: "row" },
+                  h(
+                    "button",
+                    {
+                      class: "sw-linkbtn",
+                      type: "button",
+                      "aria-pressed": c === sel ? "true" : "false",
+                      dataset: { fid: `cr.ch.${c}` },
+                      onclick: () => {
+                        crChapter = c;
+                        render();
+                      },
+                    },
+                    c === 1 ? "Chapter 1 · pilot" : `Chapter ${c}`,
+                  ),
+                ),
+                h("td", null, statusBadge(D.coldReadCell(state, c, cards))),
+                h("td", { class: "sw-num" }, p.doc ? count(p.confusion) : "—"),
+                h("td", { class: "sw-num" }, p.doc ? count(p.obvious) : "—"),
+                h("td", null, statusBadge(D.coldFixCell(state, c, cards))),
+                h("td", { class: "sw-num" }, ok === null ? "—" : h("span", { class: ok === 4 ? "sw-ok-text" : "sw-warn-text" }, `${ok} / 4 clear`)),
+              );
+            }),
+          ),
+        ),
+      ),
+      h(
+        "div",
+        { class: "sw-cr-detail" },
+        h(
+          "div",
+          { class: "sw-cr-detail-head" },
+          h("h3", null, sel === 1 ? "Pilot · chapter 1" : `Chapter ${sel}`),
+          D.chapterSummary(state, sel)
+            ? h("button", { class: "sw-btn ghost sm", type: "button", dataset: { fid: "cr.read" }, onclick: () => openChapter(sel, "text", "cr.read") }, icon("book"), "Read chapter")
+            : null,
+        ),
+        coldReadBody(sel, "rec"),
+      ),
+    ];
+  }
+
+  /// One chapter's cold read: what the reader found (confusion and
+  /// over-explained counted apart), each item with its fix and status, the
+  /// first-three-lines check and the first-appearance list. `where` keeps
+  /// the drawer's and the records tab's controls apart.
+  function coldReadBody(n, where) {
+    const v = D.coldReadView(state, n, { category: crCategory, status: crStatus });
+    const readSt = D.unitStatus(v.read, cards);
+    const fixSt = D.unitStatus(v.fix, cards);
+    if (!v.doc) {
+      const c = D.coldReadCell(state, n, cards);
+      const why = !v.read
+        ? n === 1
+          ? "The cold read starts once the pilot is written."
+          : "The cold read starts once this chapter is written."
+        : v.read.status === "failed"
+          ? `The cold-read card closed without a report${v.read.note ? ` (${v.read.note})` : ""}. Retry it to read the chapter again.`
+          : "A fresh reader is on it — their report shows up here as soon as they submit it.";
+      return [
+        h("div", { class: "sw-cr-meta" }, statusBadge(c), h("span", { class: "sw-spacer" }), sessionBtn(readSt.sessionId, "Reader's session"), v.read && v.read.status === "failed" ? retryBtn(v.read) : null),
+        empty(why),
+      ];
+    }
+    const tile = (label, k, cat) => {
+      const on = crCategory === cat;
+      const fid = `${where}.cr.tile.${cat}`;
+      return h(
+        "button",
+        {
+          class: `sw-cr-tile ${cat}${on ? " on" : ""}`,
+          type: "button",
+          "aria-pressed": on ? "true" : "false",
+          title: on ? "Show every category" : `Show only ${label.toLowerCase()} items`,
+          dataset: { fid },
+          onclick: () => {
+            crCategory = on ? "all" : cat;
+            focusFid = fid;
+            render();
+          },
+        },
+        h("span", { class: "sw-stat-label" }, label),
+        h("span", { class: "sw-stat-value" }, String(k.total)),
+        h("span", { class: "sw-stat-sub" }, k.total ? (k.fixed === k.total ? "All fixed" : `${k.fixed} fixed · ${k.total - k.fixed} open`) : "None found"),
+      );
+    };
+    const catOpts = [
+      { value: "all", label: `All categories (${v.total})` },
+      { value: "confusion", label: `Confusion — every kind (${v.confusion.total})` },
+      ...D.COLD_CATEGORIES.map((c) => ({ value: c.id, label: `${c.id === "obvious" ? "" : "— "}${c.label} (${v.byCategory[c.id] || 0})` })),
+    ];
+    const resolve = D.characterResolver(D.castOf(state).list);
+    return [
+      h(
+        "div",
+        { class: "sw-cr-summary" },
+        tile("Confusion", v.confusion, "confusion"),
+        tile("Over-explained", v.obvious, "obvious"),
+        h(
+          "div",
+          { class: "sw-cr-tile lines" },
+          h("span", { class: "sw-stat-label" }, "First three lines"),
+          v.checks.length
+            ? h(
+                "ul",
+                { class: "sw-cr-checks" },
+                v.checks.map((c) => h("li", { class: c.ok ? "ok" : "no" }, icon(c.ok ? "check" : "x"), c.label, h("span", { class: "sw-sr" }, c.ok ? ": clear" : ": not clear"))),
+              )
+            : h("p", { class: "sw-muted" }, "Not reported."),
+        ),
+      ),
+      h(
+        "div",
+        { class: "sw-cr-meta" },
+        h(
+          "span",
+          null,
+          `Read ${fmtDate(v.doc.submitted_at)} · revision ${v.doc.chapter_revision}`,
+          v.doc.attempt > 1 ? ` · report ${v.doc.attempt}` : "",
+          v.doc.fixes_at ? ` · fixes ${fmtDate(v.doc.fixes_at)}` : "",
+        ),
+        h("span", { class: "sw-spacer" }),
+        sessionBtn(readSt.sessionId, "Reader's session"),
+        sessionBtn(fixSt.sessionId, "Writer's session"),
+        v.fix && v.fix.status === "failed" ? retryBtn(v.fix) : null,
+      ),
+      v.total
+        ? h(
+            "div",
+            { class: "sw-toolbar" },
+            selectBox(`${where}.cr.cat`, "Category", crCategory, catOpts, (val) => (crCategory = val)),
+            seg(
+              `${where}.cr.status`,
+              crStatus,
+              [
+                { value: "all", label: "All", count: v.counts.all },
+                { value: "open", label: "Open", count: v.counts.open },
+                { value: "fixed", label: "Fixed", count: v.counts.fixed },
+              ],
+              (val) => {
+                crStatus = val;
+                render();
+              },
+              "Fix status",
+            ),
+          )
+        : null,
+      v.total
+        ? v.shown.length
+          ? h("ol", { class: "sw-cr-items", "aria-label": "Cold-read items" }, v.shown.map(crItem))
+          : empty("No items match this filter.")
+        : empty("The cold reader found nothing to fix — no confusion and nothing over-explained."),
+      h(
+        "section",
+        { class: "sw-cr-sec" },
+        h("h3", { class: "sw-subhead" }, `Characters in order of first appearance · ${v.characters.length}`),
+        h("p", { class: "sw-help" }, "Only what the text had said about each one at that point — what a player would know."),
+        v.characters.length
+          ? h(
+              "ol",
+              { class: "sw-cr-chars" },
+              v.characters.map((c) =>
+                h(
+                  "li",
+                  null,
+                  h("strong", null, c.name),
+                  resolve(c.name).known ? null : h("span", { class: "sw-badge warn", title: "No character sheet has this name" }, "No character sheet"),
+                  h("span", { class: "sw-cr-said" }, c.said || "—"),
+                ),
+              ),
+            )
+          : h("p", { class: "sw-muted" }, "No characters listed."),
+      ),
+    ];
+  }
+
+  function crItem(i) {
+    return h(
+      "li",
+      { class: `sw-cr-item${i.obvious ? " obvious" : ""}${i.fixed ? " fixed" : " open"}` },
+      h(
+        "div",
+        { class: "sw-cr-head" },
+        h("span", { class: `sw-cr-cat${i.obvious ? " obvious" : ""}`, title: i.cat.hint || null }, i.cat.label),
+        h("span", { class: "sw-cr-id" }, i.id),
+        i.location ? h("span", { class: "sw-cr-loc" }, i.location) : null,
+        h("span", { class: "sw-spacer" }),
+        badge(i.fixed ? "ok" : "warn", i.fixed ? "Fixed" : "Open"),
+      ),
+      i.quote ? h("blockquote", { class: "sw-cr-quote" }, i.quote) : null,
+      h("p", { class: "sw-cr-text" }, i.text),
+      h(
+        "div",
+        { class: `sw-cr-fix${i.fixed ? "" : " none"}` },
+        h("span", { class: "sw-setup-k" }, i.obvious ? "Fix · cut, or replaced with the feeling" : "Fix"),
+        i.fixed ? h("p", null, i.fix) : h("p", { class: "sw-muted" }, "Not fixed yet."),
+      ),
+    );
+  }
+
+  // ── unexplained names, terms and rules (C3) ───────────────────────────
+
+  function unexplainedPanel() {
+    const all = D.unexplainedList(state, "all");
+    const c = all.counts;
+    if (!c.total) {
+      return empty(
+        `No unexplained names, terms or rules recorded yet. Writers list, per scene, each one a reader meets before the text explains it — at most ${D.UNEXPLAINED_CAP} per scene — and the chapter that answers it.`,
+      );
+    }
+    const flagged = D.unexplainedList(state, "flagged").rows.reduce((k, r) => k + r.items.length, 0);
+    const list = D.unexplainedList(state, unexFilter);
+    const why = [
+      c.overCap ? `${plural(c.overCap, "scene")} over the cap of ${D.UNEXPLAINED_CAP}` : null,
+      c.overdue ? `${plural(c.overdue, "question")} still unanswered ${D.UNANSWERED_LIMIT} or more chapters later` : null,
+    ].filter(Boolean);
+    return [
+      h(
+        "div",
+        { class: "sw-toolbar" },
+        seg(
+          "unex",
+          unexFilter,
+          [
+            { value: "all", label: "All", count: c.total },
+            { value: "unanswered", label: "Unanswered", count: c.unanswered },
+            { value: "flagged", label: "Flagged", count: flagged },
+          ],
+          (v) => {
+            unexFilter = v;
+            render();
+          },
+          "Filter unexplained names",
+        ),
+        h("span", { class: "sw-muted sw-toolbar-count" }, `Cap ${D.UNEXPLAINED_CAP} per scene · flagged when unanswered ${D.UNANSWERED_LIMIT}+ chapters later`),
+      ),
+      why.length ? banner("warn", [h("strong", null, "Too much for the reader to carry: "), `${why.join("; ")}.`], null) : null,
+      list.rows.length ? h("div", { class: "sw-unex" }, list.rows.map(unexScene)) : empty(unexFilter === "flagged" ? "Nothing flagged." : "Every name, term and rule has been answered."),
+    ];
+  }
+
+  const KIND_LABEL = { name: "Name", term: "Term", rule: "Rule" };
+
+  function unexScene(r) {
+    const fid = `unex.${r.id}`;
+    return h(
+      "article",
+      { class: `sw-unex-scene${r.flagged ? " flagged" : ""}` },
+      h(
+        "header",
+        { class: "sw-unex-head" },
+        h("button", { class: "sw-linkbtn", type: "button", dataset: { fid }, onclick: () => openChapter(r.chapter, "scenes", fid) }, `Chapter ${r.chapter}`),
+        h("span", { class: "sw-unex-scene-name" }, r.scene || r.id),
+        h("span", { class: "sw-spacer" }),
+        r.overCap ? badge("err", `Over the cap · ${r.count} / ${D.UNEXPLAINED_CAP}`) : h("span", { class: "sw-muted sw-unex-cap" }, `${r.count} / ${D.UNEXPLAINED_CAP}`),
+      ),
+      h("ul", { class: "sw-unex-items" }, r.items.map(unexItem)),
+    );
+  }
+
+  function unexItem(i) {
+    const status = i.answered
+      ? badge("ok", `Answered · ch ${i.answeredIn.chapter}${i.answeredIn.scene ? ` · ${i.answeredIn.scene}` : ""}`)
+      : badge(i.overdue ? "err" : "warn", i.age ? `Unanswered · ${plural(i.age, "chapter")}` : "Unanswered");
+    return h(
+      "li",
+      { class: `sw-unex-item${i.overdue ? " overdue" : ""}` },
+      h("span", { class: "sw-unex-name" }, h("strong", null, i.name), h("span", { class: "sw-unex-kind" }, KIND_LABEL[i.kind] || i.kind)),
+      status,
     );
   }
 
@@ -1757,7 +2215,8 @@ export function mountDashboard(container, opts) {
     const reviews = D.PASSES.filter((p) => D.reviewOf(state, n, p.id)).length;
     const scenes = ((state.records && state.records.scene_sheets) || []).filter((s) => s.chapter === n);
     const fbCount = ((state && state.feedback) || []).filter((f) => f.chapter === n).length;
-    const counts = { reviews, scenes: scenes.length, feedback: fbCount };
+    const cold = D.coldReadOf(state, n);
+    const counts = { cold: cold ? (cold.items || []).length : undefined, reviews, scenes: scenes.length, feedback: fbCount };
     const go = (to) => () => openChapter(to, drawer.tab, drawerOpenerFid, `drawer.go.${to > n ? "next" : "prev"}`);
     const trap = (e) => {
       if (e.key === "Escape") {
@@ -1840,6 +2299,8 @@ export function mountDashboard(container, opts) {
 
   function drawerPanel(n, sum, t, row, scenes) {
     switch (drawer.tab) {
+      case "cold":
+        return coldReadBody(n, "drawer");
       case "reviews":
         return reviewsTab(n, row);
       case "scenes":
@@ -1930,6 +2391,7 @@ export function mountDashboard(container, opts) {
   function scenesTab(scenes) {
     if (!scenes.length) return empty("No scene sheets for this chapter yet. Writers fill one per scene: where, when, who's there and what's true.");
     const resolve = D.characterResolver(D.castOf(state).list);
+    const unex = new Map(D.unexplainedList(state).rows.map((r) => [r.id, r]));
     return h(
       "div",
       { class: "sw-scenes" },
@@ -1950,6 +2412,22 @@ export function mountDashboard(container, opts) {
               )
             : null,
           (s.facts || []).length ? h("ul", { class: "sw-bullets" }, s.facts.map((f) => h("li", null, f))) : null,
+          unex.has(s.id)
+            ? h(
+                "div",
+                { class: `sw-scene-unex${unex.get(s.id).flagged ? " flagged" : ""}` },
+                h(
+                  "div",
+                  { class: "sw-unex-head" },
+                  h("span", { class: "sw-setup-k" }, "Unexplained names, terms and rules"),
+                  h("span", { class: "sw-spacer" }),
+                  unex.get(s.id).overCap
+                    ? badge("err", `Over the cap · ${unex.get(s.id).count} / ${D.UNEXPLAINED_CAP}`)
+                    : h("span", { class: "sw-muted sw-unex-cap" }, `${unex.get(s.id).count} / ${D.UNEXPLAINED_CAP}`),
+                ),
+                h("ul", { class: "sw-unex-items" }, unex.get(s.id).items.map(unexItem)),
+              )
+            : null,
         ),
       ),
     );
@@ -1966,8 +2444,9 @@ export function mountDashboard(container, opts) {
     const allowed = D.canGiveFeedback(state, n);
     const gate = n === 1 && g.active ? h("div", { class: "sw-drawer-approve" }, approveControls("drawer")) : null;
     if (!allowed) {
-      const why =
-        D.stageIndex(D.engineOf(state).stage) < D.stageIndex("pilot_review")
+      const why = g.notReady
+        ? "Feedback and approval open once the pilot's cold read is done and every item it found is fixed."
+        : D.stageIndex(D.engineOf(state).stage) < D.stageIndex("pilot_review")
           ? "You can send feedback once the pilot chapter is written."
           : "Feedback opens once this chapter is written.";
       return [h("p", { class: "sw-muted sw-fb-closed" }, why), gate];

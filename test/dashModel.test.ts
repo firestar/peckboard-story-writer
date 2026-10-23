@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM page module, no type declarations
 import * as D from "../page/dash-model.js";
-import { REVIEW_PASSES, STAGES, defaultBrief } from "../src/types";
+import { COLD_READ_CATEGORIES, REVIEW_PASSES, STAGES, defaultBrief } from "../src/types";
 
 function unit(id: string, patch: any = {}): any {
   const [kind] = id.split(":");
@@ -35,6 +35,7 @@ function st(patch: any = {}): any {
     reviews: patch.reviews || [],
     feedback: patch.feedback || [],
     cards: [],
+    cold_reads: patch.coldReads || [],
   };
 }
 
@@ -43,8 +44,17 @@ describe("dash model: catalogs", () => {
     expect(D.PASSES.map((p: any) => p.id)).toEqual([...REVIEW_PASSES]);
   });
 
-  it("covers every engine stage after setup, in order", () => {
-    expect(D.STAGES.map((s: any) => s.id)).toEqual(STAGES.filter((s) => s !== "setup"));
+  it("covers every engine stage after setup, in order, with the pilot's cold read and fix as their own steps", () => {
+    const engine = STAGES.filter((s) => s !== "setup");
+    const ids = D.STAGES.map((s: any) => s.id);
+    expect(ids.filter((id: string) => id !== "cold_read" && id !== "cold_fix")).toEqual(engine);
+    expect(ids.slice(ids.indexOf("pilot"), ids.indexOf("pilot_review") + 1)).toEqual(["pilot", "cold_read", "cold_fix", "pilot_review"]);
+  });
+
+  it("has one cold-read category per server enum value, obvious last", () => {
+    expect(D.COLD_CATEGORIES.map((c: any) => c.id)).toEqual([...COLD_READ_CATEGORIES]);
+    expect(D.coldCategory("nope").id).toBe("other");
+    expect(D.coldCategory(undefined).id).toBe("other");
   });
 });
 
@@ -361,5 +371,196 @@ describe("dash model: rules and feedback", () => {
     expect(D.wordCount("Mara didn't wait — she ran.\n\nJun's 2nd try.")).toBe(8);
     expect(D.fileSlug("Ashwood: The Drowned Café!")).toBe("ashwood-the-drowned-cafe");
     expect(D.fileSlug("   ")).toBe("story");
+  });
+});
+
+describe("dash model: cold read (C1/C2)", () => {
+  const pilotDone = unit("pilot", { chapter: 1, status: "done", card_id: "p" });
+  const report = (items: any[], extra: any = {}) => ({
+    chapter: 1,
+    attempt: 1,
+    chapter_revision: 1,
+    items,
+    first_three_lines: { narrator: true, want: false, tension: true, clear: false },
+    characters: [{ name: "Mara", said: "the narrator, a letter-runner" }],
+    submitted_at: "2026-01-02T00:00:00Z",
+    ...extra,
+  });
+  const items = [
+    { id: "c1", category: "unexplained", text: "Who is Nadia?", quote: "Nadia called.", location: "para 1", fix: "Named her as my sister." },
+    { id: "c2", category: "speaker", text: "Who says this?", fix: null },
+    { id: "c3", category: "obvious", text: "Explains voicemail", quote: "Nadia only leaves messages when I stop answering.", fix: null },
+  ];
+
+  it("splits the pilot stage into pilot -> cold read -> cold-read fix on the timeline", () => {
+    expect(D.currentStep(st({ stage: "pilot", units: [unit("pilot", { chapter: 1 })] }))).toBe("pilot");
+    const reading = st({ stage: "pilot", units: [pilotDone, unit("cold_read:1", { chapter: 1, card_id: "r" })] });
+    expect(D.currentStep(reading)).toBe("cold_read");
+    const by = Object.fromEntries(D.stageSummaries(reading, { r: { id: "r", step: "in_progress", worker_session_id: "s9" } }).map((x: any) => [x.id, x]));
+    expect(by.pilot.status).toBe("done");
+    expect(by.cold_read).toMatchObject({ status: "active", sub: "Reading", working: 1 });
+    expect(by.cold_read.units.map((u: any) => u.id)).toEqual(["cold_read:1"]);
+    expect(by.cold_fix.status).toBe("pending");
+
+    const fixing = st({
+      stage: "pilot",
+      units: [pilotDone, unit("cold_read:1", { chapter: 1, status: "done" }), unit("cold_read_fix:1", { chapter: 1, card_id: "f" })],
+      coldReads: [report(items)],
+    });
+    expect(D.currentStep(fixing)).toBe("cold_fix");
+    const by2 = Object.fromEntries(D.stageSummaries(fixing, null).map((x: any) => [x.id, x]));
+    expect(by2.cold_read).toMatchObject({ status: "done", sub: "3 items found" });
+    expect(by2.cold_fix).toMatchObject({ status: "active", done: 1, total: 3, sub: "1 / 3 fixed" });
+    expect(by2.cold_fix.units.map((u: any) => u.id)).toEqual(["cold_read_fix:1"]);
+    expect(by2.pilot_review.status).toBe("pending");
+  });
+
+  it("keeps the gate not ready (no approve) until every pilot cold-read item is fixed", () => {
+    const fixing = st({
+      stage: "pilot",
+      units: [pilotDone, unit("cold_read:1", { chapter: 1, status: "done" }), unit("cold_read_fix:1", { chapter: 1 })],
+      coldReads: [report(items)],
+    });
+    expect(D.gateInfo(fixing)).toMatchObject({ active: false, notReady: true, coldClear: false, canApprove: false });
+    expect(D.gateInfo(fixing).cold).toMatchObject({ total: 3, fixed: 1, open: 2, confusion: { total: 2, fixed: 1 }, obvious: { total: 1, fixed: 0 } });
+
+    const allFixed = items.map((i) => ({ ...i, fix: i.fix || "cut" }));
+    const atGate = st({
+      stage: "pilot_review",
+      units: [pilotDone, unit("cold_read:1", { chapter: 1, status: "done" }), unit("cold_read_fix:1", { chapter: 1, status: "done" })],
+      coldReads: [report(allFixed)],
+    });
+    expect(D.gateInfo(atGate)).toMatchObject({ active: true, notReady: false, coldClear: true, canApprove: true });
+    // A pipeline from before cold reads existed reaches the gate without one.
+    expect(D.gateInfo(st({ stage: "pilot_review", units: [pilotDone] })).canApprove).toBe(true);
+  });
+
+  it("grid cells for the cold read and its fixes", () => {
+    const none = st({ stage: "pilot", units: [unit("pilot", { chapter: 1 })] });
+    expect(D.coldReadCell(none, 1, null)).toMatchObject({ key: "pending", label: "Not started" });
+    expect(D.coldFixCell(none, 1, null).key).toBe("pending");
+
+    const reading = st({ stage: "pilot", units: [pilotDone, unit("cold_read:1", { chapter: 1, card_id: "r" })] });
+    expect(D.coldReadCell(reading, 1, { r: { id: "r", step: "in_progress", worker_session_id: "s9" } })).toMatchObject({ key: "working", label: "Reading", sessionId: "s9" });
+
+    const clear = st({ stage: "pilot_review", units: [pilotDone, unit("cold_read:1", { chapter: 1, status: "done" })], coldReads: [report([])] });
+    expect(D.coldReadCell(clear, 1, null)).toMatchObject({ key: "passed", label: "Nothing found" });
+    expect(D.coldFixCell(clear, 1, null)).toMatchObject({ key: "passed", label: "Nothing to fix" });
+
+    const fixing = st({
+      stage: "pilot",
+      units: [pilotDone, unit("cold_read:1", { chapter: 1, status: "done" }), unit("cold_read_fix:1", { chapter: 1, card_id: "f" })],
+      coldReads: [report(items)],
+    });
+    expect(D.coldReadCell(fixing, 1, null)).toMatchObject({ key: "flagged", tone: "warn", label: "3 items found", detail: "2 confusion items · 1 over-explained" });
+    expect(D.coldFixCell(fixing, 1, { f: { id: "f", step: "in_progress", worker_session_id: "w" } })).toMatchObject({ key: "working", label: "Fixing", detail: "1 of 3 fixed" });
+    expect(D.chapterRows(fixing, null)[0]).toMatchObject({ cold: { key: "flagged" }, fix: { key: "open" } });
+    const fixed = st({
+      stage: "pilot_review",
+      units: [pilotDone, unit("cold_read:1", { chapter: 1, status: "done" }), unit("cold_read_fix:1", { chapter: 1, status: "done" })],
+      coldReads: [report(items.map((i) => ({ ...i, fix: i.fix || "cut" })))],
+    });
+    expect(D.coldReadCell(fixed, 1, null)).toMatchObject({ key: "passed", tone: "ok", label: "3 items found · all fixed" });
+    expect(D.coldFixCell(fixed, 1, null)).toMatchObject({ key: "done", label: "All 3 fixed" });
+
+    const failed = st({ stage: "pilot", units: [pilotDone, unit("cold_read:1", { chapter: 1, status: "failed", note: "no submit" })] });
+    expect(D.coldReadCell(failed, 1, null)).toMatchObject({ key: "failed", detail: "no submit" });
+  });
+
+  it("lists a later chapter's cold-read units under Chapters, right after that chapter's draft", () => {
+    const s = st({
+      stage: "chapters",
+      approved: true,
+      units: [
+        unit("chapter:3", { chapter: 3, status: "done" }),
+        unit("cold_read_fix:2", { chapter: 2 }),
+        unit("cold_read:2", { chapter: 2, status: "done" }),
+        unit("chapter:2", { chapter: 2, status: "done" }),
+        unit("cold_read:3", { chapter: 3 }),
+      ],
+    });
+    const chapters = D.stageSummaries(s, null).find((x: any) => x.id === "chapters");
+    expect(chapters.units.map((u: any) => u.id)).toEqual(["chapter:2", "cold_read:2", "cold_read_fix:2", "chapter:3", "cold_read:3"]);
+    expect(chapters.sub).toBe("2 in cold read");
+    expect(D.unitLabel(unit("cold_read:2", { chapter: 2 }))).toBe("Chapter 2 · cold read");
+    expect(D.unitLabel(unit("cold_read_fix:1", { chapter: 1 }))).toBe("Pilot · cold-read fixes");
+  });
+
+  it("the viewer filters by category (confusion vs obvious) and status, with the first-lines check", () => {
+    const s = st({ stage: "pilot", units: [pilotDone, unit("cold_read:1", { chapter: 1, status: "done" })], coldReads: [report(items)] });
+    const all = D.coldReadView(s, 1);
+    expect(all.items.map((i: any) => [i.id, i.cat.id, i.obvious, i.fixed])).toEqual([
+      ["c1", "unexplained", false, true],
+      ["c2", "speaker", false, false],
+      ["c3", "obvious", true, false],
+    ]);
+    expect(all.counts).toEqual({ all: 3, open: 2, fixed: 1 });
+    expect(all.byCategory).toEqual({ unexplained: 1, speaker: 1, obvious: 1 });
+    expect(D.coldReadView(s, 1, { category: "obvious" }).shown.map((i: any) => i.id)).toEqual(["c3"]);
+    expect(D.coldReadView(s, 1, { category: "confusion" }).shown.map((i: any) => i.id)).toEqual(["c1", "c2"]);
+    expect(D.coldReadView(s, 1, { category: "confusion", status: "open" }).shown.map((i: any) => i.id)).toEqual(["c2"]);
+    expect(D.coldReadView(s, 1, { status: "fixed" }).shown.map((i: any) => i.id)).toEqual(["c1"]);
+    expect(all.checks.map((c: any) => [c.key, c.ok])).toEqual([
+      ["narrator", true],
+      ["want", false],
+      ["tension", true],
+      ["clear", false],
+    ]);
+    expect(all.characters).toEqual([{ name: "Mara", said: "the narrator, a letter-runner" }]);
+    // A report filed before categories existed reads as "other confusion".
+    const legacy = st({ coldReads: [report([{ id: "c1", text: "?", fix: null }])] });
+    expect(D.coldReadView(legacy, 1).items[0].cat.id).toBe("other");
+    expect(D.coldReadChapters(st({ coldReads: [report([])], units: [unit("cold_read:3", { chapter: 3 })] }))).toEqual([1, 3]);
+  });
+});
+
+describe("dash model: first introductions and unexplained names (C3)", () => {
+  it("reads a character's first introduction", () => {
+    expect(D.firstIntro({ first_intro: { chapter: 1, scene: "The job", line: "My sister Nadia never calls twice." } })).toEqual({
+      chapter: 1,
+      scene: "The job",
+      line: "My sister Nadia never calls twice.",
+    });
+    expect(D.firstIntro({})).toBeNull();
+    expect(D.firstIntro({ first_intro: { scene: "x" } })).toBeNull();
+  });
+
+  it("flags scenes over the cap and names unanswered too long", () => {
+    const s = st({
+      chapters: 5,
+      docs: [1, 2, 3, 4].map((c) => ({ chapter: c, revision: 1, length: 10 })),
+      records: {
+        scene_sheets: [
+          { id: "s3", chapter: 3, scene: "Archive", unexplained: [{ name: "the Ninth", kind: "name" }] },
+          {
+            id: "s1",
+            chapter: 1,
+            scene: "The job",
+            unexplained: [
+              { name: "Tidewardens", kind: "term", answered_in: { chapter: 2, scene: "Canal" } },
+              { name: "black wax", kind: "rule" },
+              { name: "Jun", kind: "name", answered_in: { chapter: 1 } },
+              { name: "the Low Wards", kind: "name" },
+            ],
+          },
+          { id: "s2", chapter: 2, scene: "Quiet", unexplained: [] },
+        ],
+      },
+    });
+    const all = D.unexplainedList(s);
+    expect(all.latest).toBe(4);
+    expect(all.rows.map((r: any) => [r.id, r.overCap, r.flagged])).toEqual([
+      ["s1", true, true],
+      ["s3", false, false],
+    ]);
+    expect(all.rows[0].items.map((i: any) => [i.name, i.answered, i.age, i.overdue])).toEqual([
+      ["Tidewardens", true, 1, false],
+      ["black wax", false, 3, true],
+      ["Jun", true, 0, false],
+      ["the Low Wards", false, 3, true],
+    ]);
+    expect(all.counts).toEqual({ scenes: 2, total: 5, answered: 2, unanswered: 3, overdue: 2, overCap: 1, flagged: 1 });
+    expect(D.unexplainedList(s, "unanswered").rows.map((r: any) => r.items.length)).toEqual([2, 1]);
+    expect(D.unexplainedList(s, "flagged").rows.map((r: any) => r.id)).toEqual(["s1"]);
   });
 });

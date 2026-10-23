@@ -30,6 +30,23 @@ const ICON = {
   spark: M.MODES[2].icon,
 };
 
+// The built-in style guide, grouped as the wizard shows it (the server tags
+// each entry with one of these; entries without a group are style).
+const GUIDE_GROUPS = [
+  { id: "style", title: "Voice and style", sub: "The owner-approved style: voice, flow, scene logic, dialogue, no jokes, and fights with a run-up, phases and a cost." },
+  {
+    id: "reader",
+    title: "Introductions and the reader's point of view",
+    sub: "Introduce every character the first time they're named, open on a hook (no banned openers), never assume the reader knows what isn't on the page — and don't state the obvious.",
+  },
+  { id: "english", title: "English quality", sub: "Contractions, no explanatory tails or abstract noun chains, conciseness, sentence variety, no fragments or run-ons." },
+  { id: "vn", title: "Visual novel", sub: "Choice labels and the system voice." },
+];
+
+function fmtDay(iso) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  return isNaN(d.getTime()) ? iso : d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
 function msg(e) {
   return e && e.message ? e.message : String(e);
 }
@@ -1635,6 +1652,41 @@ export function mountWizard(container, opts) {
     );
   }
 
+  /// Which models the pipeline's cards run on (plugin settings, read-only
+  /// here). The owner's rule: judge a writer by the pilot, and switch
+  /// models when a pilot fails rather than piling on more rules.
+  function modelInfo() {
+    const m = defaults.models || {};
+    const w = m.writer || {};
+    const r = m.reviewer || {};
+    const row = (dt, x, fallback) =>
+      h(
+        "div",
+        null,
+        h("dt", null, dt),
+        h("dd", { title: x.id || null }, x.name || fallback, x.is_default && x.name ? h("span", { class: "sw-badge sw-model-default" }, "Default") : null),
+      );
+    return h(
+      "div",
+      { class: "sw-section sw-models" },
+      h(
+        "div",
+        { class: "sw-section-head" },
+        h(
+          "div",
+          { style: { flex: "1" } },
+          h("h3", null, "Who writes and reviews"),
+          h(
+            "p",
+            { class: "sw-sub" },
+            "Rules can't rescue a weak writer. Judge the writer model by the pilot chapter you read; if a pilot fails, switch the model in the plugin's settings rather than adding more rules.",
+          ),
+        ),
+      ),
+      h("dl", { class: "sw-summary sw-models-list" }, row("Writer model", w, "—"), row("Reviewer model · cold reader", r, "The board's default model")),
+    );
+  }
+
   function styleEditor(show, disabled, modeBlock) {
     const vn = fmt() === "vn";
     const entries = defaults.style_guide.filter((e) => vn || !e.vn_only);
@@ -1642,6 +1694,7 @@ export function mountWizard(container, opts) {
     const changed = entries.filter((e) => overrides[e.id] !== undefined).length;
     const get = () => M.asStringList(draft.elements.style_rules);
     return [
+      modelInfo(),
       h(
         "div",
         { class: "sw-section" },
@@ -1660,7 +1713,23 @@ export function mountWizard(container, opts) {
           ),
           changed ? h("span", { class: "sw-badge busy" }, `${changed} changed`) : null,
         ),
-        h("div", { class: "sw-lessons" }, entries.map((e) => lessonCard(e, overrides))),
+        GUIDE_GROUPS.map((g) => {
+          const list = entries.filter((e) => (e.group || "style") === g.id);
+          if (!list.length) return null;
+          const added = list.map((e) => e.added).filter(Boolean)[0] || null;
+          return h(
+            "div",
+            { class: "sw-guide-group" },
+            h(
+              "div",
+              { class: "sw-guide-head" },
+              h("h4", null, g.title),
+              added ? h("span", { class: "sw-badge new" }, `New · ${fmtDay(added)}`) : null,
+            ),
+            h("p", { class: "sw-help" }, g.sub),
+            h("div", { class: "sw-lessons" }, list.map((e) => lessonCard(e, overrides))),
+          );
+        }),
       ),
       h(
         "div",
@@ -1724,6 +1793,7 @@ export function mountWizard(container, opts) {
         "div",
         { class: "sw-lesson-head" },
         h("strong", null, e.title),
+        e.added ? h("span", { class: "sw-badge new", title: `Added ${fmtDay(e.added)}` }, "New") : null,
         h(
           "span",
           { class: `sw-badge${state === "edited" ? " busy" : ""}` },
@@ -1899,6 +1969,11 @@ export function mountWizard(container, opts) {
           item("Tense", b.tense),
           item("Tone", b.tone),
           item("Audience · rating", [b.audience, b.rating].filter(Boolean).join(" · ")),
+          item("Writer model", defaults.models && defaults.models.writer ? `${defaults.models.writer.name}${defaults.models.writer.is_default ? " (default)" : ""}` : ""),
+          item(
+            "Reviewer model",
+            defaults.models && defaults.models.reviewer && defaults.models.reviewer.name ? defaults.models.reviewer.name : "The board's default model",
+          ),
         ),
         readOnly
           ? null

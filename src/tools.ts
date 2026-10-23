@@ -285,10 +285,20 @@ export function toolSubmitColdRead(args: any, _context: any): any {
   if (!chapterDoc) throw new Error(`chapter ${chapter} has no submitted text yet`);
 
   const existing = getColdRead(projectId, chapter);
-  const items: ColdReadItem[] = (Array.isArray(args.items) ? args.items : []).map((it: any, i: number) => ({
+  const raw: any[] = Array.isArray(args.items) ? args.items : [];
+  raw.forEach((it, i) => {
+    // "Don't state the obvious" items are fixed by cutting or replacing the
+    // exact line, so the writer has to be told which line it was.
+    if (it.category === "obvious" && !(typeof it.quote === "string" && it.quote.trim())) {
+      throw new Error(`items[${i}]: an "obvious" (over-explained) item must quote the line`);
+    }
+  });
+  const items: ColdReadItem[] = raw.map((it: any, i: number) => ({
     id: `c${i + 1}`,
+    category: it.category,
     text: it.text,
-    quote: typeof it.quote === "string" ? it.quote : undefined,
+    quote: typeof it.quote === "string" && it.quote.trim() ? it.quote : undefined,
+    location: typeof it.location === "string" && it.location.trim() ? it.location : undefined,
     fix: null,
   }));
 
@@ -304,7 +314,7 @@ export function toolSubmitColdRead(args: any, _context: any): any {
   putColdRead(projectId, doc);
   writeColdRead(doc);
 
-  return { ok: true, items: items.map((i) => ({ id: i.id, text: i.text })) };
+  return { ok: true, items: items.map((i) => ({ id: i.id, category: i.category, text: i.text })) };
 }
 
 /// Record, for a chapter's cold-read report, exactly what changed in the

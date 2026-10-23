@@ -101,7 +101,7 @@ function finishColdRead(cards: ReturnType<typeof fakeCards>, chapter: number, it
   invoke("story_cold_read_get_text", { chapter });
   invoke("story_submit_cold_read", {
     chapter,
-    items: itemTexts.map((text) => ({ text })),
+    items: itemTexts.map((text) => ({ category: "other", text })),
     first_three_lines: { narrator: true, want: true, tension: true, clear: true },
     characters: [],
   });
@@ -349,7 +349,14 @@ describe("pipeline engine: cold-read stage (SW-9)", () => {
     invoke("story_cold_read_get_text", { chapter: 1 });
     invoke("story_submit_cold_read", {
       chapter: 1,
-      items: [{ text: "Who is Nadia?" }],
+      items: [
+        { category: "unexplained", text: "Who is Nadia?", location: "first paragraph" },
+        {
+          category: "obvious",
+          text: "Explains how voicemail works",
+          quote: "Nadia only leaves messages when I stop answering, and I let her last two calls ring out.",
+        },
+      ],
       first_three_lines: { narrator: true, want: true, tension: true, clear: true },
       characters: [{ name: "Nadia", said: "a name on a voicemail" }],
     });
@@ -357,15 +364,24 @@ describe("pipeline engine: cold-read stage (SW-9)", () => {
     const readCard = open(cards.cards).find((c) => c.title.startsWith("Cold read"))!;
     finishCard(cards, readCard.id);
 
-    // With one item reported, the fix card exists and the gate is blocked on it.
+    // With items reported (a confusion and an over-explained line), the fix
+    // card exists and the gate is blocked on it.
     const fixCard = open(cards.cards).find((c) => c.title.startsWith("Cold-read fixes"))!;
     expect(fixCard).toBeTruthy();
     expect(fixCard.model).toBe("claude:writer@acct");
-    expect(fixCard.description).toContain("c1: Who is Nadia?");
+    expect(fixCard.description).toContain("c1 [Name or term used before it's explained] (first paragraph): Who is Nadia?");
+    expect(fixCard.description).toContain("c2 [Over-explained / obvious]: Explains how voicemail works");
+    expect(fixCard.description).toContain("cutting the quoted line, or by replacing the mechanics");
     expect(authed("GET", "/state").body.engine.stage).toBe("pilot"); // not pilot_review yet
     expect(authed("POST", "/pipeline/approve").status).toBe(409);
 
-    invoke("story_submit_cold_read_fixes", { chapter: 1, fixes: [{ item: "c1", fix: "Named her as the narrator's sister on first mention." }] });
+    invoke("story_submit_cold_read_fixes", {
+      chapter: 1,
+      fixes: [
+        { item: "c1", fix: "Named her as the narrator's sister on first mention." },
+        { item: "c2", fix: "cut" },
+      ],
+    });
     finishCard(cards, fixCard.id);
     expect(authed("GET", "/state").body.engine.stage).toBe("pilot_review");
   });
@@ -420,7 +436,7 @@ describe("pipeline engine: cold-read stage (SW-9)", () => {
 
     setSession("cold-1");
     invoke("story_cold_read_get_text", { chapter: 1 });
-    invoke("story_submit_cold_read", { chapter: 1, items: [{ text: "a" }, { text: "b" }], characters: [] });
+    invoke("story_submit_cold_read", { chapter: 1, items: [{ category: "other", text: "a" }, { category: "motive", text: "b" }], characters: [] });
     setSession("session-1");
     finishCard(cards, open(cards.cards).find((c) => c.title.startsWith("Cold read"))!.id);
 
@@ -451,7 +467,7 @@ describe("pipeline engine: cold-read stage (SW-9)", () => {
 
     setSession("cold-1");
     invoke("story_cold_read_get_text", { chapter: 1 });
-    invoke("story_submit_cold_read", { chapter: 1, items: [{ text: "a" }], characters: [] });
+    invoke("story_submit_cold_read", { chapter: 1, items: [{ category: "other", text: "a" }], characters: [] });
     setSession("session-1");
     const readCard = open(cards.cards).find((c) => c.title.startsWith("Cold read"))!;
     finishCard(cards, readCard.id);
@@ -477,7 +493,7 @@ describe("pipeline engine: cold-read stage (SW-9)", () => {
 
     setSession("cold-1");
     invoke("story_cold_read_get_text", { chapter: 1 });
-    invoke("story_submit_cold_read", { chapter: 1, items: [{ text: "a" }], characters: [] });
+    invoke("story_submit_cold_read", { chapter: 1, items: [{ category: "other", text: "a" }], characters: [] });
     setSession("session-1");
     finishCard(cards, open(cards.cards).find((c) => c.title.startsWith("Cold read"))!.id);
 
@@ -690,7 +706,7 @@ describe("pipeline engine: host limits", () => {
         invoke("story_cold_read_get_text", { chapter: ch });
         invoke("story_submit_cold_read", {
           chapter: ch,
-          items: [{ text: "n" }],
+          items: [{ category: "other", text: "n" }],
           first_three_lines: { narrator: true, want: true, tension: true, clear: true },
           characters: [],
         });

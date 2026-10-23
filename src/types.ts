@@ -367,10 +367,33 @@ export interface ReviewDoc {
   rounds: ReviewRound[];
 }
 
+/// What kind of problem a cold-read item is. Every kind but `obvious` is a
+/// point of confusion (the cold-read card's checklist, in the same order);
+/// `obvious` is the reverse failure (§1D "Don't state the obvious"): a line
+/// that explains common-sense mechanics or repeats what follows from the
+/// line before. The dashboard counts the two groups separately.
+export const COLD_READ_CATEGORIES = ["unexplained", "speaker", "orientation", "motive", "reread", "contradiction", "other", "obvious"] as const;
+export type ColdReadCategory = (typeof COLD_READ_CATEGORIES)[number];
+
+export const COLD_READ_CATEGORY_LABELS: Record<ColdReadCategory, string> = {
+  unexplained: "Name or term used before it's explained",
+  speaker: "Unclear speaker or pronoun",
+  orientation: "Unclear place, time or elapsed time",
+  motive: "Unexplained motive",
+  reread: "Had to guess or re-read",
+  contradiction: "Contradicts earlier text",
+  other: "Other confusion",
+  obvious: "Over-explained / obvious",
+};
+
 export interface ColdReadItem {
   id: string;
+  /// Missing on reports filed before categories existed — read as "other".
+  category?: ColdReadCategory;
   text: string;
   quote?: string;
+  /// Where in the chapter, in the reader's words ("scene 2, Jun's second line").
+  location?: string;
   fix: string | null;
   fixed_at?: string;
 }

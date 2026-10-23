@@ -479,17 +479,53 @@ describe("dispatch: cold-read tools (SW-9)", () => {
     setSession("cold-1");
     const result = invoke("story_submit_cold_read", {
       chapter: 2,
-      items: [{ text: "Who is Bo?" }, { text: "Unclear pronoun", quote: "He left." }],
+      items: [
+        { category: "unexplained", text: "Who is Bo?", location: "scene 1, first line" },
+        { category: "speaker", text: "Unclear pronoun", quote: "He left." },
+      ],
       first_three_lines: { narrator: true, want: false, tension: true, clear: false },
       characters: [{ name: "Bo", said: "a stranger" }],
     });
     expect(result.ok).toBe(true);
     expect(result.items).toEqual([
-      { id: "c1", text: "Who is Bo?" },
-      { id: "c2", text: "Unclear pronoun" },
+      { id: "c1", category: "unexplained", text: "Who is Bo?" },
+      { id: "c2", category: "speaker", text: "Unclear pronoun" },
     ]);
     expect(files["story/cold-reads/ch-02.md"]).toContain("Who is Bo?");
+    expect(files["story/cold-reads/ch-02.md"]).toContain("Where: scene 1, first line");
+    expect(files["story/cold-reads/ch-02.md"]).toContain("### c2 · Unclear speaker or pronoun");
     expect(files["story/cold-reads/ch-02.md"]).toContain("Fix: _not yet fixed_");
+    const state = JSON.parse(
+      allowPayload(dispatch("http.request.authed", { method: "GET", path: "/api/plugin-ui/story-writer/state" })).body,
+    );
+    expect(state.cold_reads[0].items[0]).toMatchObject({ id: "c1", category: "unexplained", location: "scene 1, first line", fix: null });
+  });
+
+  it("story_submit_cold_read takes an over-explained (obvious) item, counted apart, and requires its quote", () => {
+    setSession("cold-1");
+    const line = "Nadia only leaves messages when I stop answering, and I let her last two calls ring out.";
+    expect(
+      invoke("story_submit_cold_read", { chapter: 2, items: [{ category: "obvious", text: "Explains voicemail" }], characters: [] }).error,
+    ).toMatch(/must quote the line/);
+    const result = invoke("story_submit_cold_read", {
+      chapter: 2,
+      items: [
+        { category: "obvious", text: "Explains how voicemail works", quote: line, location: "opening paragraph" },
+        { category: "motive", text: "Why does she hide?" },
+      ],
+      characters: [],
+    });
+    expect(result.items.map((i: any) => i.category)).toEqual(["obvious", "motive"]);
+    expect(files["story/cold-reads/ch-02.md"]).toContain("1 confusion item(s), 1 over-explained");
+    expect(files["story/cold-reads/ch-02.md"]).toContain(`> ${line}`);
+    setSession("session-1");
+    expect(invoke("story_submit_cold_read_fixes", { chapter: 2, fixes: [{ item: "c1", fix: "cut" }, { item: "c2", fix: "Added her reason." }] }).unfixed).toEqual([]);
+  });
+
+  it("story_submit_cold_read rejects an item without a known category", () => {
+    setSession("cold-1");
+    expect(invoke("story_submit_cold_read", { chapter: 2, items: [{ text: "Who is Bo?" }], characters: [] }).error).toMatch(/category/);
+    expect(invoke("story_submit_cold_read", { chapter: 2, items: [{ category: "typo", text: "x" }], characters: [] }).error).toMatch(/category/);
   });
 
   it("story_submit_cold_read errors for a chapter that hasn't been submitted", () => {
@@ -499,7 +535,7 @@ describe("dispatch: cold-read tools (SW-9)", () => {
 
   it("story_submit_cold_read_fixes rejects an unknown item id, and reports which items remain unfixed", () => {
     setSession("cold-1");
-    invoke("story_submit_cold_read", { chapter: 2, items: [{ text: "a" }, { text: "b" }], characters: [] });
+    invoke("story_submit_cold_read", { chapter: 2, items: [{ category: "other", text: "a" }, { category: "reread", text: "b" }], characters: [] });
     setSession("session-1");
     expect(invoke("story_submit_cold_read_fixes", { chapter: 2, fixes: [{ item: "nope", fix: "x" }] }).error).toMatch(
       /unknown cold-read item/,

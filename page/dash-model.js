@@ -16,6 +16,29 @@ export const PASSES = [
   { id: "sentence-shape", label: "Sentence shape", short: "Shape" },
 ];
 
+/// Cold-read item categories (src/types.ts COLD_READ_CATEGORIES). Every one
+/// but "obvious" is a point of confusion; "obvious" (over-explained, §1D
+/// "Don't state the obvious") is counted and filtered on its own.
+export const COLD_CATEGORIES = [
+  { id: "unexplained", label: "Unexplained name or term", hint: "Used before the text says who or what it is" },
+  { id: "speaker", label: "Unclear speaker", hint: "Who is talking, or who a he, she or it is" },
+  { id: "orientation", label: "Unclear place or time", hint: "Where we are, when, or how much time has passed" },
+  { id: "motive", label: "Unexplained motive", hint: "Why someone does what they do" },
+  { id: "reread", label: "Had to re-read", hint: "The reader had to guess, or read it twice" },
+  { id: "contradiction", label: "Contradiction", hint: "Contradicts something earlier" },
+  { id: "other", label: "Other confusion", hint: null },
+  { id: "obvious", label: "Over-explained / obvious", hint: "Explains common sense, or repeats what the line before made clear" },
+];
+
+export function coldCategory(id) {
+  return COLD_CATEGORIES.find((c) => c.id === id) || COLD_CATEGORIES.find((c) => c.id === "other");
+}
+
+/// C3: at most this many unexplained names/terms/rules per scene, and each
+/// answered within this many chapters (the dashboard flags the rest).
+export const UNEXPLAINED_CAP = 3;
+export const UNANSWERED_LIMIT = 2;
+
 export const STAGES = [
   {
     id: "records",
@@ -28,11 +51,25 @@ export const STAGES = [
     blurb: "Chapter 1, written first so you can check the voice and direction before the rest of the book.",
   },
   {
+    id: "cold_read",
+    label: "Cold read",
+    blurb: "A fresh reader who has never seen the brief, records or cards reads the pilot once, as a player would, and reports every point of confusion and every over-explained line.",
+  },
+  {
+    id: "cold_fix",
+    label: "Cold-read fix",
+    blurb: "The writer fixes every item the cold reader reported — confusion is the text's fault — and records what changed for each. The pilot reaches you once every item is fixed.",
+  },
+  {
     id: "pilot_review",
     label: "Your review",
     blurb: "Read the pilot, then approve it or send feedback. Feedback on any chapter becomes a revision card, listed here.",
   },
-  { id: "chapters", label: "Chapters", blurb: "The remaining chapters, written in parallel once you approve the pilot." },
+  {
+    id: "chapters",
+    label: "Chapters",
+    blurb: "The remaining chapters, written in parallel once you approve the pilot. Each gets its own cold read and cold-read fix before the review passes.",
+  },
   {
     id: "review",
     label: "Review passes",
@@ -42,6 +79,10 @@ export const STAGES = [
 ];
 
 const ORDER = ["setup", "records", "pilot", "pilot_review", "chapters", "review", "final"];
+
+// The timeline splits the engine's "pilot" stage into the pilot draft and
+// its cold-read chain (C1 read, C2 fix), which both run before your review.
+const STEPS = ["setup", "records", "pilot", "cold_read", "cold_fix", "pilot_review", "chapters", "review", "final"];
 
 export const STAGE_STATUS_LABEL = {
   done: "Done",
@@ -53,6 +94,25 @@ export const STAGE_STATUS_LABEL = {
 
 export function stageIndex(stage) {
   return ORDER.indexOf(stage);
+}
+
+export function stepIndex(step) {
+  return STEPS.indexOf(step);
+}
+
+/// The timeline step the pipeline is on: the engine's stage, except that its
+/// "pilot" stage reads as Pilot chapter -> Cold read -> Cold-read fix.
+export function currentStep(state) {
+  const e = engineOf(state);
+  if (e.stage !== "pilot") return e.stage;
+  const pilot = e.units.pilot;
+  if (!pilot || pilot.status !== "done") return "pilot";
+  const read = e.units["cold_read:1"];
+  return read && read.status === "done" ? "cold_fix" : "cold_read";
+}
+
+function pl(n, one, many) {
+  return `${n} ${n === 1 ? one : many || one + "s"}`;
 }
 
 export function passLabel(pass) {
@@ -80,13 +140,15 @@ export function chapterSummary(state, n) {
   return ((state && state.chapters) || []).find((c) => c.chapter === n) || null;
 }
 
-/// Engine units in pipeline order: records, pilot, chapters, reviews (by
-/// chapter, then pass), revisions; ties by creation time.
+/// Engine units in pipeline order: records; then per chapter its draft,
+/// cold read and cold-read fixes; reviews (by chapter, then pass);
+/// revisions; ties by creation time.
 export function sortedUnits(state) {
-  const rank = { records: 0, pilot: 1, chapter: 2, review: 3, revision: 4, generate: 5 };
+  const rank = { records: 0, pilot: 1, chapter: 1, cold_read: 1, cold_read_fix: 1, review: 3, revision: 4, generate: 5 };
+  const within = { cold_read: 1, cold_read_fix: 2 };
   return Object.values(engineOf(state).units).sort((a, b) => {
-    const ka = [rank[a.kind] ?? 9, a.chapter ?? 0, passIndexOf(a), a.created_at || ""];
-    const kb = [rank[b.kind] ?? 9, b.chapter ?? 0, passIndexOf(b), b.created_at || ""];
+    const ka = [rank[a.kind] ?? 9, a.chapter ?? 0, within[a.kind] ?? 0, passIndexOf(a), a.created_at || ""];
+    const kb = [rank[b.kind] ?? 9, b.chapter ?? 0, within[b.kind] ?? 0, passIndexOf(b), b.created_at || ""];
     for (let i = 0; i < ka.length; i++) {
       if (ka[i] < kb[i]) return -1;
       if (ka[i] > kb[i]) return 1;
@@ -118,6 +180,10 @@ export function unitLabel(u) {
     case "revision":
       if (isFeedbackRevision(u)) return `Chapter ${u.chapter} · revision from your feedback`;
       return `Chapter ${u.chapter} · ${passLabel(u.id.split(":")[3])} revision`;
+    case "cold_read":
+      return u.chapter === 1 ? "Pilot · cold read" : `Chapter ${u.chapter} · cold read`;
+    case "cold_read_fix":
+      return u.chapter === 1 ? "Pilot · cold-read fixes" : `Chapter ${u.chapter} · cold-read fixes`;
     case "generate":
       return `${String(u.element || "").replace(/_/g, " ")} draft`;
     default:
@@ -125,10 +191,11 @@ export function unitLabel(u) {
   }
 }
 
-/// Which dashboard stage a unit is listed under. Revisions from the
-/// owner's feedback (on the pilot or any chapter) live under "Your review",
-/// the owner's stage; revisions a review pass asked for stay with the
-/// review passes.
+/// Which dashboard step a unit is listed under. The pilot's cold read and
+/// fixes have their own steps; a later chapter's stay with Chapters.
+/// Revisions from the owner's feedback (on the pilot or any chapter) live
+/// under "Your review", the owner's stage; revisions a review pass asked
+/// for stay with the review passes.
 export function stageOfUnit(u) {
   switch (u.kind) {
     case "records":
@@ -141,6 +208,10 @@ export function stageOfUnit(u) {
       return "review";
     case "revision":
       return isFeedbackRevision(u) ? "pilot_review" : "review";
+    case "cold_read":
+      return u.chapter === 1 ? "cold_read" : "chapters";
+    case "cold_read_fix":
+      return u.chapter === 1 ? "cold_fix" : "chapters";
     default:
       return "setup";
   }
@@ -185,12 +256,13 @@ export function passesDone(state) {
 
 export function stageSummaries(state, cards) {
   const engine = engineOf(state);
-  const at = stageIndex(engine.stage);
+  const at = stepIndex(currentStep(state));
   const n = chapterCount(state);
   const units = sortedUnits(state).filter((u) => u.kind !== "generate");
   const notes = (state && state.pipeline && state.pipeline.stages) || {};
+  const cold = coldReadProgress(state, 1);
   return STAGES.map((s) => {
-    const idx = stageIndex(s.id);
+    const idx = stepIndex(s.id);
     const mine = units.filter((u) => stageOfUnit(u) === s.id);
     const failed = mine.filter((u) => u.status === "failed").length;
     const working = cards ? mine.filter((u) => unitStatus(u, cards).key === "working").length : 0;
@@ -207,6 +279,19 @@ export function stageSummaries(state, cards) {
       total = 1;
       done = mine.some((u) => u.kind === s.id && u.status === "done") || idx < at ? 1 : 0;
       sub = done ? "Done" : status === "pending" ? "" : working ? "Writing" : "In progress";
+    } else if (s.id === "cold_read") {
+      total = 1;
+      done = cold.read && cold.read.status === "done" ? 1 : 0;
+      // Pipelines started before cold reads existed went past without one.
+      if (!cold.read) sub = status === "done" ? "Not run" : "";
+      else if (done) sub = cold.total ? `${pl(cold.total, "item")} found` : "Nothing found";
+      else if (status !== "pending") sub = working ? "Reading" : "Waiting for a reader";
+    } else if (s.id === "cold_fix") {
+      total = cold.total;
+      done = cold.fixed;
+      if (!cold.read || cold.read.status !== "done") sub = status === "done" ? "Not run" : "";
+      else if (!cold.total) sub = "Nothing to fix";
+      else sub = `${cold.fixed} / ${cold.total} fixed`;
     } else if (s.id === "pilot_review") {
       total = mine.length;
       done = mine.filter((u) => u.status === "done").length;
@@ -217,7 +302,15 @@ export function stageSummaries(state, cards) {
     } else if (s.id === "chapters") {
       total = Math.max(0, n - 1);
       done = mine.filter((u) => u.kind === "chapter" && u.status === "done").length;
-      sub = total === 0 ? "Single chapter" : status === "pending" && !mine.length ? `${total} to write` : `${done} / ${total} written`;
+      const reading = mine.filter((u) => (u.kind === "cold_read" || u.kind === "cold_read_fix") && u.status === "open").length;
+      sub =
+        total === 0
+          ? "Single chapter"
+          : status === "pending" && !mine.length
+            ? `${total} to write`
+            : reading && done === total
+              ? `${reading} in cold read`
+              : `${done} / ${total} written`;
     } else if (s.id === "review") {
       total = n * PASSES.length;
       done = passesDone(state);
@@ -225,7 +318,8 @@ export function stageSummaries(state, cards) {
     } else {
       sub = engine.finished ? "Ready to export" : "";
     }
-    const note = notes[s.id] && notes[s.id].note ? notes[s.id].note : null;
+    const noteKey = s.id === "cold_read" || s.id === "cold_fix" ? null : s.id;
+    const note = noteKey && notes[noteKey] && notes[noteKey].note ? notes[noteKey].note : null;
     return { ...s, status, units: mine, failed, working, done, total, sub, note };
   });
 }
@@ -237,7 +331,23 @@ export function gateInfo(state) {
   const n = chapterCount(state);
   const openPilotRevision = Object.values(engine.units).some((u) => u.kind === "revision" && u.chapter === 1 && u.status === "open");
   const active = engine.stage === "pilot_review";
-  return { active, openPilotRevision, canApprove: active && !openPilotRevision, remaining: Math.max(0, n - 1), approved: engine.approved };
+  const cold = coldReadProgress(state, 1);
+  // Pipelines started before cold reads existed reached the gate without one.
+  const coldClear = cold.read ? cold.clear : true;
+  // Written, but its cold read and fixes haven't cleared: the owner can read
+  // the pilot, not approve it yet.
+  const pilot = engine.units.pilot;
+  const notReady = engine.stage === "pilot" && !!pilot && pilot.status === "done";
+  return {
+    active,
+    notReady,
+    cold,
+    coldClear,
+    openPilotRevision,
+    canApprove: active && !openPilotRevision && coldClear,
+    remaining: Math.max(0, n - 1),
+    approved: engine.approved,
+  };
 }
 
 /// Feedback is accepted from the owner gate onward, on the pilot or any
@@ -315,6 +425,8 @@ export function chapterRows(state, cards) {
       chapter: c,
       pilot: c === 1,
       draft: draftCell(state, c, cards),
+      cold: coldReadCell(state, c, cards),
+      fix: coldFixCell(state, c, cards),
       passes: PASSES.map((_p, i) => passCell(state, c, i, cards)),
       revising: revisions.some((u) => u.status === "open"),
       revisions: revisions.length,
@@ -325,6 +437,124 @@ export function chapterRows(state, cards) {
     });
   }
   return rows;
+}
+
+// ── Cold read (C1) and cold-read fixes (C2) ───────────────────────────────
+
+export function coldReadOf(state, n) {
+  return ((state && state.cold_reads) || []).find((d) => d.chapter === n) || null;
+}
+
+function isFixed(item) {
+  return item.fix !== null && item.fix !== undefined && String(item.fix).trim() !== "";
+}
+
+/// One chapter's cold-read chain: the read (C1) and fix (C2) units, the
+/// report, and its item counts — confusion and over-explained apart.
+/// `clear` = read, and nothing left to fix: the chapter may move on.
+export function coldReadProgress(state, n) {
+  const { units } = engineOf(state);
+  const read = units[`cold_read:${n}`] || null;
+  const fix = units[`cold_read_fix:${n}`] || null;
+  const doc = coldReadOf(state, n);
+  const items = (doc && doc.items) || [];
+  const obvious = items.filter((i) => i.category === "obvious");
+  const confusion = items.filter((i) => i.category !== "obvious");
+  const fixed = items.filter(isFixed).length;
+  const readDone = !!read && read.status === "done";
+  const clear = readDone && !!doc && (items.length === 0 || (fixed === items.length && (!fix || fix.status === "done")));
+  return {
+    read,
+    fix,
+    doc,
+    total: items.length,
+    fixed,
+    open: items.length - fixed,
+    confusion: { total: confusion.length, fixed: confusion.filter(isFixed).length },
+    obvious: { total: obvious.length, fixed: obvious.filter(isFixed).length },
+    clear,
+  };
+}
+
+function itemsDetail(p) {
+  const parts = [];
+  if (p.confusion.total) parts.push(pl(p.confusion.total, "confusion item"));
+  if (p.obvious.total) parts.push(`${p.obvious.total} over-explained`);
+  return parts.join(" · ");
+}
+
+export function coldReadCell(state, n, cards) {
+  const p = coldReadProgress(state, n);
+  const st = unitStatus(p.read, cards);
+  const extra = { unit: p.read, sessionId: st.sessionId };
+  if (!p.read) return cell("pending", "muted", "Not started", n === 1 ? "Starts once the pilot is written" : "Starts once the chapter is written", extra);
+  if (st.key === "failed") return cell("failed", "err", "Failed", st.detail, extra);
+  if (p.read.status === "done") {
+    if (!p.total) return cell("passed", "ok", "Nothing found", "The cold reader reported no confusion and nothing over-explained", extra);
+    // Once every item is fixed the read needs nothing more from anyone.
+    if (!p.open) return cell("passed", "ok", `${pl(p.total, "item")} found · all fixed`, itemsDetail(p), extra);
+    return cell("flagged", "warn", `${pl(p.total, "item")} found`, itemsDetail(p), extra);
+  }
+  if (st.key === "working") return cell("working", "busy", "Reading", null, extra);
+  return cell(st.key, st.tone, st.label, st.detail, extra);
+}
+
+export function coldFixCell(state, n, cards) {
+  const p = coldReadProgress(state, n);
+  const st = unitStatus(p.fix, cards);
+  const extra = { unit: p.fix, sessionId: st.sessionId };
+  if (!p.read || p.read.status !== "done") return cell("pending", "muted", "Not started", "Starts after the cold read", extra);
+  if (!p.total) return cell("passed", "ok", "Nothing to fix", null, extra);
+  const progress = `${p.fixed} of ${p.total} fixed`;
+  if (st.key === "failed") return cell("failed", "err", "Failed", st.detail, extra);
+  if (p.fix && p.fix.status === "done") return cell("done", "ok", `All ${p.total} fixed`, itemsDetail(p), extra);
+  if (!p.fix) return cell("queued", "muted", "Queued", progress, extra);
+  if (st.key === "working") return cell("working", "busy", "Fixing", progress, extra);
+  return cell(st.key, st.tone, st.label, st.detail ? `${progress} · ${st.detail}` : progress, extra);
+}
+
+/// The cold-read viewer: every item with its category and fix status,
+/// filtered by category ("all", "confusion" = every kind but obvious,
+/// "obvious", or one category id) and status ("all" / "open" / "fixed"),
+/// plus the first-three-lines check and the first-appearance list.
+export function coldReadView(state, n, filter) {
+  const { category = "all", status = "all" } = filter || {};
+  const p = coldReadProgress(state, n);
+  const items = ((p.doc && p.doc.items) || []).map((i) => {
+    const cat = coldCategory(i.category);
+    return { ...i, cat, obvious: cat.id === "obvious", fixed: isFixed(i) };
+  });
+  const byCategory = {};
+  for (const i of items) byCategory[i.cat.id] = (byCategory[i.cat.id] || 0) + 1;
+  const inCategory = (i) => category === "all" || (category === "confusion" ? !i.obvious : i.cat.id === category);
+  const pool = items.filter(inCategory);
+  const shown = pool.filter((i) => status === "all" || (status === "fixed" ? i.fixed : !i.fixed));
+  const f = p.doc && p.doc.first_three_lines;
+  const checks = f
+    ? [
+        { key: "narrator", label: "Who the narrator is", ok: !!f.narrator },
+        { key: "want", label: "What they want right now", ok: !!f.want },
+        { key: "tension", label: "What the tension is", ok: !!f.tension },
+        { key: "clear", label: "Clear overall", ok: !!f.clear },
+      ]
+    : [];
+  return {
+    ...p,
+    items,
+    shown,
+    byCategory,
+    counts: { all: pool.length, open: pool.filter((i) => !i.fixed).length, fixed: pool.filter((i) => i.fixed).length },
+    checks,
+    characters: (p.doc && p.doc.characters) || [],
+  };
+}
+
+/// Chapters with a cold read under way or on file, in order.
+export function coldReadChapters(state) {
+  const n = chapterCount(state);
+  const out = [];
+  for (let c = 1; c <= n; c++) if (coldReadOf(state, c) || engineOf(state).units[`cold_read:${c}`]) out.push(c);
+  return out;
 }
 
 // ── Characters (shared by every record viewer) ──────────────────────────
@@ -596,4 +826,52 @@ export function fileSlug(title) {
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
   return s || "story";
+}
+
+// ── First introductions and unexplained names (C3) ─────────────────────────
+
+/// A character's first introduction in the text (chapter, scene, exact
+/// line), recorded by the chapter that introduces them; null until then.
+export function firstIntro(c) {
+  const f = c && c.first_intro;
+  if (!f || !Number.isInteger(f.chapter)) return null;
+  return { chapter: f.chapter, scene: String(f.scene || "").trim(), line: String(f.line || "").trim() };
+}
+
+/// Per-scene unexplained names, terms and rules (C3), each answered or
+/// still open. A scene is flagged when it carries more than the cap, an
+/// item when it's still unanswered UNANSWERED_LIMIT chapters later (counted
+/// against the latest written chapter). `filter`: all / unanswered / flagged.
+export function unexplainedList(state, filter) {
+  const scenes = ((state && state.records && state.records.scene_sheets) || []).filter((s) => Array.isArray(s.unexplained) && s.unexplained.length);
+  const latest = Math.max(0, ...((state && state.chapters) || []).map((c) => c.chapter));
+  const rows = scenes
+    .map((s) => {
+      const items = s.unexplained.map((u) => {
+        const answeredIn = u && u.answered_in && Number.isInteger(u.answered_in.chapter) ? u.answered_in : null;
+        const age = Math.max(0, (answeredIn ? answeredIn.chapter : latest) - (s.chapter || 0));
+        return { name: u.name, kind: u.kind || "term", answeredIn, answered: !!answeredIn, age, overdue: !answeredIn && age >= UNANSWERED_LIMIT };
+      });
+      const overCap = items.length > UNEXPLAINED_CAP;
+      return { id: s.id, chapter: s.chapter, scene: s.scene, items, count: items.length, overCap, flagged: overCap || items.some((i) => i.overdue) };
+    })
+    .sort((a, b) => (a.chapter || 0) - (b.chapter || 0));
+  const all = rows.flatMap((r) => r.items);
+  const counts = {
+    scenes: rows.length,
+    total: all.length,
+    answered: all.filter((i) => i.answered).length,
+    unanswered: all.filter((i) => !i.answered).length,
+    overdue: all.filter((i) => i.overdue).length,
+    overCap: rows.filter((r) => r.overCap).length,
+    flagged: rows.filter((r) => r.flagged).length,
+  };
+  const pick = filter || "all";
+  const shown = rows
+    .map((r) => ({
+      ...r,
+      items: pick === "unanswered" ? r.items.filter((i) => !i.answered) : pick === "flagged" ? (r.overCap ? r.items : r.items.filter((i) => i.overdue)) : r.items,
+    }))
+    .filter((r) => r.items.length);
+  return { rows: shown, counts, latest };
 }
