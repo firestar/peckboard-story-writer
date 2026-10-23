@@ -53,8 +53,6 @@ export function manifestJson(): string {
       "user_authority", // serve the authenticated Story tab data routes
     ],
 
-    call_timeout_secs: 10,
-
     // The project's "Story" tab — the wizard and pipeline dashboard live here.
     project_items: [
       {

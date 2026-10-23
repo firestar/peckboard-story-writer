@@ -94,6 +94,10 @@ describe("manifest", () => {
     );
   });
 
+  it("stays on core's default 2 s call budget", () => {
+    expect(manifest.call_timeout_secs ?? 2).toBeLessThanOrEqual(2);
+  });
+
   it("declares only permissions core grants", () => {
     for (const perm of manifest.permissions) {
       expect(ALLOWED_PERMISSIONS).toContain(perm);

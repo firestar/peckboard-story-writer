@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeCard, callerScope, docStore, fakeCards, fileWrites, hostCalls, pluginSettings, setHandlers } from "./fakeHost";
 import { dispatch } from "../src/lib";
 
@@ -474,5 +474,53 @@ describe("pipeline engine: host limits", () => {
     const cap = 256 * 1024;
     expect(JSON.stringify(engine).length).toBeLessThan(cap * 0.8);
     expect(JSON.stringify(docs[`cards/${PROJECT}`]).length).toBeLessThan(cap * 0.8);
+    // Core rejects any single stored doc over 256 KiB.
+    for (const [key, value] of Object.entries(docs)) {
+      expect(new TextEncoder().encode(JSON.stringify(value)).length, key).toBeLessThanOrEqual(cap);
+    }
+    // A finished pipeline leaves timer.tick's active index.
+    expect((docs["engine_index/active"] as any).projects).not.toContain(PROJECT);
+  });
+
+  it("stops a timer.tick across many projects at its deadline and resumes round-robin on the next tick", () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"];
+    const ds = docStore();
+    docs = ds.docs;
+    const base = { ...ds.handlers, ...fileWrites().handlers, ...cards.handlers, ...pluginSettings() };
+    for (const id of ids) {
+      setHandlers({ ...base, ...callerScope(id) });
+      setupBrief();
+      expect(authed("POST", "/pipeline/start").status).toBe(200);
+    }
+    for (const card of cards.cards) cards.setStep(card.id, "done"); // every card.step.after was dropped
+
+    // Each project's card-list sweep costs 400 ms of (fake) wall clock.
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      setHandlers({
+        ...base,
+        ...callerScope(null),
+        peckboard_list_cards: (input: any) => {
+          now += 400;
+          return cards.handlers.peckboard_list_cards(input);
+        },
+      });
+      const swept = () => hostCalls.filter((c) => c.name === "peckboard_list_cards").map((c) => c.input.project_id);
+      const stageOf = (id: string) => (docs[`engine/${id}`] as any).stage;
+
+      const start = now;
+      dispatch("timer.tick", { now: "" });
+      expect(swept()).toEqual(["p1", "p2", "p3"]); // the 4th project would start past the 1 s deadline
+      expect(now - start).toBeLessThan(2000);
+      expect(ids.filter((id) => stageOf(id) === "records")).toEqual(["p3", "p4", "p5"]);
+
+      hostCalls.length = 0;
+      dispatch("timer.tick", { now: "" });
+      expect(swept()).toEqual(["p4", "p5"]); // resumes after p3; p1-p3 were just swept (throttled)
+      expect(ids.every((id) => stageOf(id) === "pilot")).toBe(true);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

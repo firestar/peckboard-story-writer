@@ -39,7 +39,8 @@ import {
   getFeedback,
   getPipelineState,
   listChapters,
-  listEngines,
+  getEngineIndex,
+  putEngineIndex,
   getReview,
   putBrief,
   putCards,
@@ -73,7 +74,9 @@ import {
 // Core's default per-call budget is 2 s; keep every hook/route invocation
 // (store reads/writes + card creates) comfortably inside it.
 const CREATE_BUDGET_MS = 1200;
-const TIMER_BUDGET_MS = 1200; // shared across every project in one timer.tick
+// Shared by every project in one timer.tick; each run still has fixed store
+// I/O after its last deadline check, so leave extra headroom under 2 s.
+const TIMER_BUDGET_MS = 1000;
 const MAX_CREATES_PER_RUN = 8;
 // list_cards returns every card with its full (up to ~48 KB) description, so
 // the hot path never calls it; timer.tick's safety-net sweep is throttled.
@@ -628,20 +631,30 @@ export function onCardStepAfter(payload: any): string {
   return skip();
 }
 
+/// Sweeps unfinished pipelines round-robin, starting after the project the
+/// previous tick reached, until the shared deadline — so with many
+/// projects each tick stays inside the call budget and the rest are
+/// reached on the following ticks.
 export function onTimerTick(_payload: any): string {
   const deadline = Date.now() + TIMER_BUDGET_MS;
   try {
-    for (const { projectId, engine } of listEngines()) {
+    const { projects, cursor } = getEngineIndex();
+    if (projects.length === 0) return skip();
+    const start = cursor === null ? 0 : (projects.indexOf(cursor) + 1) % projects.length;
+    let reached: string | null = null;
+    for (let k = 0; k < projects.length; k++) {
       if (Date.now() >= deadline) break;
-      if (engine.finished) continue;
+      const projectId = projects[(start + k) % projects.length];
       try {
         runEngine(projectId, { deadline, createsLeft: MAX_CREATES_PER_RUN }, { sweep: true });
       } catch (_e) {
         // one project's failure must not stall every other project's tick.
       }
+      reached = projectId;
     }
+    if (reached !== null) putEngineIndex({ ...getEngineIndex(), cursor: reached });
   } catch (_e) {
-    // listing engine docs failed; the next tick retries.
+    // reading the index failed; the next tick retries.
   }
   return skip();
 }

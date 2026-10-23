@@ -111,8 +111,10 @@ card's own description.
   per-stage status/notes/data.
 - `card.step.after` re-runs the engine when one of its cards reaches
   `done`/`wont_do`, reconciling from the event payload alone; `timer.tick`
-  is the safety net, re-listing a project's cards at most every 10 minutes
-  (`list_cards` returns every card with its full description).
+  is the safety net, sweeping unfinished projects round-robin (from a small
+  `engine_index` doc) until a 1 s deadline and resuming after the last one
+  on the next tick, and re-listing a project's cards at most every 10
+  minutes (`list_cards` returns every card with its full description).
 - Parallel chapter cards (2..N) are created blocked as soon as the pilot
   starts, so they're visible before the owner approves it. Stories are
   capped at 40 chapters so each per-project doc stays under core's

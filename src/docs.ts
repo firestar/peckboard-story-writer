@@ -171,13 +171,30 @@ export function getEngine(projectId: string): EngineState {
 
 export function putEngine(projectId: string, state: EngineState): void {
   putDoc("engine", projectId, state);
+  const index = getEngineIndex();
+  const listed = index.projects.includes(projectId);
+  if (!state.finished && !listed) {
+    putEngineIndex({ ...index, projects: [...index.projects, projectId] });
+  } else if (state.finished && listed) {
+    putEngineIndex({ ...index, projects: index.projects.filter((p) => p !== projectId) });
+  }
 }
 
-/// Every project's engine doc. `card.step.after` already knows its project
-/// from the payload; `timer.tick`'s safety net has no project context at
-/// all, so it iterates this to find every pipeline it should nudge forward.
-export function listEngines(): { projectId: string; engine: EngineState }[] {
-  return listDocs("engine").map((d) => ({ projectId: d.key, engine: d.value as EngineState }));
+/// Unfinished pipelines, kept in sync by `putEngine`, plus the last project
+/// timer.tick swept so the next tick resumes after it (round-robin). A small
+/// doc, so a tick never has to load every project's engine doc.
+export interface EngineIndex {
+  projects: string[];
+  cursor: string | null;
+}
+
+export function getEngineIndex(): EngineIndex {
+  const value = getDoc("engine_index", "active") as EngineIndex | null;
+  return { projects: value?.projects ?? [], cursor: value?.cursor ?? null };
+}
+
+export function putEngineIndex(index: EngineIndex): void {
+  putDoc("engine_index", "active", index);
 }
 
 // ── Feedback (one doc per project holding the append-only list) ──────────
