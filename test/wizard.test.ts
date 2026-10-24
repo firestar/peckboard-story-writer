@@ -61,6 +61,8 @@ describe("GET /defaults", () => {
     expect(byId["english.conciseness"].group).toBe("english");
     expect(byId["choices"].group).toBe("vn");
     expect(byId["reader.intro-characters"]).toMatchObject({ group: "reader", added: "2026-10-23", title: "Introduce every character" });
+    expect(byId["reader.obvious"]).toMatchObject({ group: "reader", added: "2026-10-23", title: "Don't state the obvious" });
+    expect(byId["reader.obvious"].text).toMatch(/Never explain what every adult already knows/);
     expect(byId["reader.openings"].text).toMatch(/Banned openers/);
     expect(byId["reader.opening-craft"].title).toBe("Opening craft");
     expect(byId["reader.reader-knows"].title).toBe("What the reader knows");

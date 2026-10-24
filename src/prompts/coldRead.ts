@@ -33,9 +33,10 @@ export interface ColdReadCardInput {
   isPilot?: boolean;
 }
 
-// What counts as confusion, for the reviewer's own calibration — not craft
-// advice about writing, since a cold reader isn't fixing anything.
-const COLD_READ_LESSON_IDS = ["reader.checking", "reader.reader-knows", "reader.mystery"];
+// What counts as confusion (and as over-explained), for the reviewer's own
+// calibration — not craft advice about writing, since a cold reader isn't
+// fixing anything.
+const COLD_READ_LESSON_IDS = ["reader.checking", "reader.reader-knows", "reader.mystery", "reader.obvious"];
 
 /// A FRESH reviewer session: no brief, no records, no rules, no feedback,
 /// no prior worker output of any kind — only the chapter text (fetched via
@@ -86,7 +87,7 @@ export function renderColdReadCard(input: ColdReadCardInput): ColdReadCardSpec {
     `- [ ] ${COLD_READ_TOOLS.submitColdRead} called`,
   ].join("\n");
 
-  const lessonsMd = `## What counts as confusion\n\n${renderLessons(COLD_READ_LESSON_IDS, { format: "prose" })}`;
+  const lessonsMd = `## What counts as confusion — and as over-explained\n\n${renderLessons(COLD_READ_LESSON_IDS, { format: "prose" })}`;
 
   const description = [header, taskMd, doneMd, lessonsMd].join("\n\n");
   return { title, description, role: "reviewer" };
@@ -100,7 +101,7 @@ export interface ColdReadFixCardInput {
 }
 
 // The craft needed to actually fix clarity issues, not just the checklist.
-const COLD_READ_FIX_LESSON_IDS = ["reader.intro-characters", "reader.openings", "reader.reader-knows", "reader.checking", "reader.vn"];
+const COLD_READ_FIX_LESSON_IDS = ["reader.intro-characters", "reader.openings", "reader.reader-knows", "reader.checking", "reader.obvious", "reader.vn"];
 /// The writer, with full context, fixing every cold-read item. Unlike the
 /// cold-read card, this one gets the brief and the story's rules — the fix
 /// has to land inside the actual story's voice and continuity. `items` are

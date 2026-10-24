@@ -63,6 +63,14 @@ Owner: "always take into account the reader's POV while reading, and do not assu
 - C2 When a reader is confused, the text is at fault; fix emphasis or load, don't argue it was "right there".
 - C3 Per-scene list of unexplained names, terms and rules; each is a question the reader carries — cap them and answer them in time.
 
+### Don't state the obvious
+
+Added 2026-10-23 (owner). Example the owner flagged: "Nadia only leaves messages when I stop answering, and I let her last two calls ring out."
+
+- Never explain what every adult already knows (phones, voicemail, doors, trains, routines).
+- Cut lines whose information follows from the line before or from common sense; where the line carries something that matters, keep the feeling and drop the mechanics.
+- Cold read: report such lines as "over-explained / obvious" items, quoting the line; the fix cuts the line or replaces the mechanics with the feeling.
+
 ### Visual-novel specific
 
 - V1 The narrator's name and situation come on the first screens, before any other character is named.

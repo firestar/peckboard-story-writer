@@ -133,10 +133,17 @@ light/dark tokens, `?theme=` or `prefers-color-scheme`).
   Relationships pick both sides from the character list; AI drafts that
   refer to characters by name are matched; a name that isn't in the cast
   is flagged in the dropdown and with a note under the row.
-- Style rules: the built-in style guide (style v2 blocks, English rules,
-  and for VN the choice-label and system-voice sections) shown per section
-  with Edit / Turn off / Reset (`lesson_overrides`), plus the story's own
-  rule list. Banned words: the built-in list plus the story's own.
+- Style rules: the built-in style guide, grouped (voice and style; the
+  §1D introductions and reader's-point-of-view rules — introduce every
+  character, openings and banned openers, what the reader knows, mystery vs
+  confusion, checking from the reader's side, don't state the obvious,
+  stating feelings, and for VN the visual-novel rules — flagged *New*;
+  English quality; and for VN the choice-label and system-voice sections),
+  each with Edit / Turn off / Reset (`lesson_overrides`), plus the story's
+  own rule list. The step also shows which models the cards run on (writer
+  default: Claude Opus 5.5; judge it by the pilot and switch models in the
+  plugin settings when a pilot fails). Banned words: the built-in list plus
+  the story's own.
 - AI elements: "Draft/Generate with AI" (or "Send N to the AI" on the
   review step) queues `/pipeline/generate`; the element locks while its
   card runs, the draft lands live, the owner edits and approves it. A card
@@ -148,7 +155,9 @@ light/dark tokens, `?theme=` or `prefers-color-scheme`).
   edit. Live refreshes merge the server copy without clobbering unsaved
   typing or moving focus.
 - `GET .../defaults` supplies the starting brief, the editable style
-  guide, the built-in banned words and the chapter cap.
+  guide (each entry with its `group` and the date it was `added`), the
+  built-in banned words, the chapter cap, and `models` (writer / reviewer:
+  id, display name, whether it's the default).
 - Validation: an out-of-range or non-integer chapter count is marked on
   the field (`aria-invalid` + an alert) and never saved — the typed value
   and its error survive re-renders, and the save indicator reads "Fix the
@@ -173,7 +182,12 @@ Screenshots (Playwright, local PeckBoard with the plugin installed):
 [start confirmation](docs/screenshots/wizard-start-confirm.png),
 [a stale tab after the 409](docs/screenshots/wizard-stale-tab-409.png),
 [read-only setup after start](docs/screenshots/wizard-setup-read-only.png),
-[dark theme at 420 px](docs/screenshots/wizard-dark-mobile.png).
+[dark theme at 420 px](docs/screenshots/wizard-dark-mobile.png);
+SW-10: [models + grouped style guide](docs/screenshots/wizard-style-rules-models.png),
+[§1D reader rules](docs/screenshots/wizard-style-rules-reader-pov.png),
+[don't state the obvious](docs/screenshots/wizard-style-rules-obvious.png),
+[the same in dark](docs/screenshots/wizard-dark-style-rules-obvious.png),
+[review with the writer model](docs/screenshots/wizard-review-models.png).
 
 ## Pipeline dashboard (Story tab, once started)
 
@@ -188,37 +202,58 @@ status, worker status, grid cells, record tables) lives in
   now, and the owner's feedback count.
 - Owner gate: while the stage is `pilot_review` a banner offers **Read
   pilot**, **Send feedback** and **Approve pilot…** (confirm step; disabled
-  while a pilot revision from feedback is still open). Failed cards get a
-  banner with **Retry** / **Retry all** (`/pipeline/retry`); a finished
-  story gets **Download manuscript**.
-- Stage timeline: Records -> Pilot chapter -> Your review -> Chapters ->
-  Review passes -> Final, each with its status and progress. Picking a
-  stage lists its cards: the work, the board card (title + step), the
-  worker status (queued / waiting for a worker / working / blocked / done
-  / failed / card missing), **Open session** (posts
-  `plugin-ui-open-session` so PeckBoard opens the worker's session tab) and
-  **Retry**. Revisions from the owner's feedback are listed under "Your
-  review"; review-pass revisions under "Review passes".
-- Chapter grid: one row per chapter, a cell for the draft and each of the
-  eight review passes (status icon + label + tooltip, never colour alone),
-  plus revising / feedback notes. Any cell or chapter opens the reader.
+  while a pilot revision from feedback is still open) and notes what the
+  pilot's cold read found and that it's all fixed. Before that — pilot
+  written, cold read or its fixes still open — the gate shows the pilot as
+  *not ready*: readable, with a link to the cold-read report and a fixed /
+  total meter, but not approvable. Failed cards get a banner with
+  **Retry** / **Retry all** (`/pipeline/retry`); a finished story gets
+  **Download manuscript**.
+- Stage timeline: Records -> Pilot chapter -> Cold read -> Cold-read fix ->
+  Your review -> Chapters -> Review passes -> Final, each with its status
+  and progress (the pilot's cold read and fixes are their own steps; a
+  later chapter's sit with Chapters). Picking a stage lists its cards: the
+  work, the board card (title + step), the worker status (queued / waiting
+  for a worker / working / blocked / done / failed / card missing),
+  **Open session** (posts `plugin-ui-open-session` so PeckBoard opens the
+  worker's session tab) and **Retry**. Revisions from the owner's feedback
+  are listed under "Your review"; review-pass revisions under "Review
+  passes".
+- Chapter grid: one row per chapter, a cell for the draft, the cold read
+  (Read: reading / nothing found / N items found) and its fixes (Fixes: k
+  of N fixed), and each of the eight review passes (status icon + label +
+  tooltip, never colour alone), plus revising / feedback notes. Any cell or
+  chapter opens the reader.
 - Chapter reader (side drawer): Text (`GET .../chapter?n=N`, rendered
-  from a safe Markdown subset as DOM), Reviews (every round's verdict and
-  notes), Scenes (scene-fact sheets), Feedback, and a feedback box that
-  posts `/pipeline/feedback` (revision card + story rule); the pilot's
-  reader also carries Approve. Esc closes, Tab is trapped, prev/next
-  chapter buttons.
-- Story records tabs: Characters (full sheets, attitudes toward the
-  others, what they know), Emotions & attitudes (emotion per character per
-  chapter; an attitude matrix as of any chapter, carried forward from the
-  sheets, changes highlighted), Who knows what (facts x characters, per
-  route, as of any chapter), Setups & payoffs (promise -> progress ->
-  payoff, filter by status), Choices map (VN: choices per chapter with
-  their consequences, routes/endings and the options that lead there),
-  Glossary (search), Recaps, and Rules & feedback (story rules traced to
-  setup / owner feedback / review, edits and switched-off sections of the
-  built-in style guide, banned words, the full feedback history with each
-  revision's status).
+  from a safe Markdown subset as DOM), Cold read, Reviews (every round's
+  verdict and notes), Scenes (scene-fact sheets with their unexplained
+  names), Feedback, and a feedback box that posts `/pipeline/feedback`
+  (revision card + story rule); the pilot's reader also carries Approve.
+  Esc closes, Tab is trapped, prev/next chapter buttons.
+- Cold-read viewer (drawer tab, and the Cold reads records tab with a
+  per-chapter overview): confusion items and over-explained / obvious lines
+  counted apart (clickable tiles), a category dropdown (every category) and
+  an open / fixed filter; per item its category, the quoted line, where it
+  is, the reader's note, and the fix recorded for it (for an obvious line:
+  cut, or replaced with the feeling); the first-three-lines check
+  (narrator / want / tension / clear); the characters in order of first
+  appearance with what the text had said, flagging names with no
+  character sheet; reader's and writer's session links.
+- Story records tabs: Characters (full sheets, each with its first
+  introduction — chapter, scene and the exact line — or "not introduced
+  yet", attitudes toward the others, what they know), Cold reads,
+  Emotions & attitudes (emotion per character per chapter; an attitude
+  matrix as of any chapter, carried forward from the sheets, changes
+  highlighted), Who knows what (facts x characters, per route, as of any
+  chapter), Unexplained names (C3: per scene, each name / term / rule
+  answered — where — or unanswered for how many chapters; a scene over the
+  cap of 3 or a question unanswered 2+ chapters later is flagged), Setups
+  & payoffs (promise -> progress -> payoff, filter by status), Choices map
+  (VN: choices per chapter with their consequences, routes/endings and the
+  options that lead there), Glossary (search), Recaps, and Rules &
+  feedback (story rules traced to setup / owner feedback / review, edits
+  and switched-off sections of the built-in style guide, banned words, the
+  full feedback history with each revision's status).
 - Live: store writes arrive as `plugin-ui-event` and refetch `/state`;
   the board's side of each card (step, blocked, worker session) comes from
   `GET .../cards` — kept off `/state` because `list_cards` returns every
@@ -273,14 +308,27 @@ card's own description.
 
 This is the scaffold (SW-1), the data model, chunked store and worker MCP
 tools (SW-2), the prompt pack (SW-3), the pipeline stage machine (SW-4),
-the setup wizard (SW-5) and the pipeline dashboard (SW-6): manifest,
-hook/tool dispatch, the six story_* tools, the writing-lessons prompt pack
-with per-stage card templates, the card-driven pipeline engine, and the
-Story tab's wizard and live dashboard described above. Screenshots
-(Playwright, local PeckBoard with the plugin installed) are
-`docs/screenshots/wizard-*.png` (listed under Setup wizard) and
+the setup wizard (SW-5), the pipeline dashboard (SW-6), the 2026-10-23
+lessons (SW-8), the cold-read stage (SW-9) and its dashboard / wizard side
+(SW-10): manifest, hook/tool dispatch, the story_* tools, the
+writing-lessons prompt pack with per-stage card templates, the card-driven
+pipeline engine, and the Story tab's wizard and live dashboard described
+above. Screenshots (Playwright, local PeckBoard with the plugin installed)
+are `docs/screenshots/wizard-*.png` (listed under Setup wizard) and
 `docs/screenshots/dashboard-*.png` — e.g.
 [the owner gate](docs/screenshots/dashboard-pilot-gate.png),
 [the chapter grid](docs/screenshots/dashboard-chapter-grid.png),
 [who knows what](docs/screenshots/dashboard-who-knows-what.png),
-[dark theme](docs/screenshots/dashboard-dark.png).
+[dark theme](docs/screenshots/dashboard-dark.png); cold reads (SW-10):
+[reading](docs/screenshots/dashboard-cold-read-reading.png),
+[gate not ready while fixes run](docs/screenshots/dashboard-gate-not-ready-fixing.png),
+[the cold-read report](docs/screenshots/dashboard-cold-read-report.png),
+[over-explained filter](docs/screenshots/dashboard-cold-read-obvious-filter.png),
+[gate ready, all fixed](docs/screenshots/dashboard-gate-ready-cold-clear.png),
+[Cold reads tab](docs/screenshots/dashboard-records-cold-reads.png),
+[first introductions](docs/screenshots/dashboard-characters-first-intro.png),
+[unexplained names, flagged](docs/screenshots/dashboard-unexplained-flagged.png),
+[chapter cold reads](docs/screenshots/dashboard-chapters-cold-reads.png),
+[grid](docs/screenshots/dashboard-chapter-grid-cold-read.png),
+[dark](docs/screenshots/dashboard-dark-cold-read-report.png),
+[dark at 420 px](docs/screenshots/dashboard-dark-mobile-cold-read.png).

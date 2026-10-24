@@ -57,6 +57,20 @@ describe("renderColdReadCard", () => {
     expect(card.description).toContain("first three lines");
     expect(card.description).toContain("order of first appearance");
     expect(card.description).toContain("What counts as confusion");
+    for (const cat of ["unexplained", "speaker", "orientation", "motive", "reread", "contradiction", "other", "obvious"]) {
+      expect(card.description, cat).toContain(`\`${cat}\``);
+    }
+    expect(card.description).toContain("location");
+  });
+
+  it("asks for over-explained lines and carries the §1D \"Don't state the obvious\" lesson", () => {
+    const card = renderColdReadCard({ chapter: 2 });
+    expect(card.description).toContain("explains what every");
+    expect(card.description).toContain("### Don't state the obvious");
+    expect(card.description).toContain("Nadia only leaves messages when I stop");
+    const fix = renderColdReadFixCard({ chapter: 2, brief: null, items: ["c1 [Over-explained / obvious]: explains voicemail"] });
+    expect(fix.description).toContain("### Don't state the obvious");
+    expect(fix.description).toContain("cutting the quoted line, or by replacing the");
   });
 
   it("doesn't offer earlier chapters for chapter 1", () => {

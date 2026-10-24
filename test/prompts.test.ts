@@ -88,6 +88,7 @@ const ALL_IDS = [
   "reader.reader-knows",
   "reader.mystery",
   "reader.checking",
+  "reader.obvious",
   "reader.vn",
   "reader.feelings",
   ...["O1", "O2", "O3", "O4", "O5", "O6", "X1"].map((c) => `reader.${c}`),
@@ -254,6 +255,19 @@ describe("renderCard", () => {
     const card = renderCard("chapter", { brief: BRIEF_PROSE, chapter: 3 });
     expect(card.description).not.toContain("## 7. Mechanical rules");
     expect(card.description).not.toContain("## 5. Choices");
+  });
+
+  it("puts §1D \"Don't state the obvious\" in the writer cards and the line pass, and lets a story override it", () => {
+    for (const card of [
+      renderCard("pilot", { brief: BRIEF_PROSE, chapter: 1 }),
+      renderCard("chapter", { brief: BRIEF_PROSE, chapter: 3 }),
+      renderCard("review", { brief: BRIEF_PROSE, chapter: 3, pass: "line" }),
+    ]) {
+      expect(card.description).toContain("### Don't state the obvious");
+      expect(card.description).toContain("Never explain what every adult already knows");
+    }
+    const off = renderCard("chapter", { brief: BRIEF_PROSE, chapter: 3, overrides: { "reader.obvious": "" } });
+    expect(off.description).not.toContain("### Don't state the obvious");
   });
 
   it("applies per-id overrides, including omission", () => {

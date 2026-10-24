@@ -397,6 +397,18 @@ Owner: "starting a book with 'by the time' sounds dumb."
 - **C3. Per-scene list of unexplained names, terms and rules:** each is a question the reader
   carries — cap them and answer them in time.
 
+### Don't state the obvious
+
+Owner-approved 2026-10-23. Example the owner flagged: "Nadia only leaves messages when I stop
+answering, and I let her last two calls ring out."
+
+- Never explain what every adult already knows: how phones, voicemail, doors, trains or daily
+  routines work.
+- Cut any line whose information already follows from the line before, or from common sense.
+- Where such a line carries something that matters, keep the feeling and drop the mechanics.
+- The cold read reports these lines as "over-explained / obvious" items, each quoted; the fix cuts
+  the line or replaces the mechanics with the feeling.
+
 ### Visual-novel specific (V1–V2)
 
 - **V1. Narrator first:** the narrator's name and situation come on the first screens, before any
