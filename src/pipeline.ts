@@ -53,7 +53,18 @@ import {
 import { PromptBrief, PromptFeedback, draftKey, renderCard } from "./prompts";
 import { renderColdReadCard, renderColdReadFixCard } from "./prompts/coldRead";
 import { renderOwnerReviewCard } from "./prompts/ownerReview";
-import { buildNote, cardNotes, editNote, feedbackText, findRound, isOwnerRevisionId, latestRound, ownerRevisionId, revisionProblem } from "./ownerReview";
+import {
+  buildNote,
+  cardNotes,
+  editNote,
+  feedbackText,
+  findRound,
+  isOwnerRevisionId,
+  latestRound,
+  ownerRevisionId,
+  revisionProblem,
+  unsentNotes,
+} from "./ownerReview";
 import {
   DEFAULT_WRITER_MODEL,
   COLD_READ_CATEGORY_LABELS,
@@ -469,6 +480,14 @@ function ownerRevisionPending(ctx: Ctx, chapter?: number): boolean {
   return Object.values(ctx.engine.units).some((u) => isOwnerRevisionId(u.id) && !u.settled && u.status !== "failed" && (chapter === undefined || u.chapter === chapter));
 }
 
+/// The chapter's owner-review revision that hasn't settled yet — open,
+/// done but its redraft's cold read still running, or failed and waiting
+/// for a retry — or null. While there is one the chapter's text is in flux:
+/// no review pass and no later chapter's cold read may build on it (SW-15).
+function unsettledOwnerRevision(ctx: Ctx, chapter: number): Unit | null {
+  return Object.values(ctx.engine.units).find((u) => isOwnerRevisionId(u.id) && !u.settled && u.chapter === chapter) ?? null;
+}
+
 /// Drive every owner-review revision (SW-12): materialize its card; once
 /// the writer's redraft is in, re-run the chapter's cold read (C1) and
 /// fixes (C2) on it; once that clears, close the round as revised and open
@@ -603,7 +622,12 @@ function advanceChapters(ctx: Ctx): boolean {
   let priorCleared = true;
   for (let i = 2; i <= n; i++) {
     const unit = ensureUnit(ctx, { id: `chapter:${i}`, kind: "chapter", chapter: i, priority: 2, blocked: false });
-    const cleared: boolean = priorCleared && unit.status === "done" && advanceColdReadChain(ctx, i);
+    // A chapter the owner sent back (SW-15): its redraft's cold read runs
+    // only once the writer's card is done, and until the round settles it
+    // isn't cleared, so no later chapter's cold read reads it mid-redraft.
+    const redraft = unsettledOwnerRevision(ctx, i);
+    const chained: boolean = priorCleared && unit.status === "done" && (!redraft || redraft.status === "done") && advanceColdReadChain(ctx, i);
+    const cleared: boolean = chained && !redraft;
     if (!cleared) allDone = false;
     priorCleared = cleared;
   }
@@ -652,6 +676,10 @@ function advanceReview(ctx: Ctx): boolean {
       ctx.engine.cursors[key] = cursor;
       ctx.dirty = true;
     }
+    if (holdForRedraft(ctx, cursor)) {
+      allDone = false;
+      continue;
+    }
     if (cursor.waiting === "done") continue;
     allDone = false;
     if (advanceCursor(ctx, cursor)) progressed = true;
@@ -679,6 +707,44 @@ function latestReviewNotes(projectId: string, chapter: number, pass: ReviewPass)
   return latestReview(projectId, chapter, pass)?.notes ?? `Review pass "${pass}" requested changes for chapter ${chapter}.`;
 }
 
+/// Review passes on a chapter wait while the owner has it back for a
+/// redraft (SW-15): a pass would read, and its revision card rewrite, text
+/// that is about to change. Once the redraft cleared its cold read (the
+/// round settled) the chapter's passes restart from the first on the new
+/// text — every unit from before is marked stale and gets a fresh card
+/// when its pass comes round again (`ensureFresh`). True while held.
+function holdForRedraft(ctx: Ctx, cursor: ReviewCursor): boolean {
+  if (unsettledOwnerRevision(ctx, cursor.chapter)) {
+    if (!cursor.redraft) {
+      cursor.redraft = true;
+      ctx.dirty = true;
+    }
+    return true;
+  }
+  if (!cursor.redraft) return false;
+  const prefixes = [`review:${cursor.chapter}:`, `revision:review:${cursor.chapter}:`];
+  const stale = Object.keys(ctx.engine.units).filter((id) => prefixes.some((p) => id.startsWith(p)));
+  if (stale.length > 0) cursor.stale = stale;
+  cursor.pass_index = 0;
+  cursor.round = 1;
+  cursor.waiting = "review";
+  delete cursor.redraft;
+  ctx.dirty = true;
+  return false;
+}
+
+/// `ensureUnit`, first resetting a unit left over from before a redraft
+/// restarted the chapter's passes, so it re-runs on the new text.
+function ensureFresh(ctx: Ctx, cursor: ReviewCursor, spec: UnitSpec): Unit {
+  const at = cursor.stale ? cursor.stale.indexOf(spec.id) : -1;
+  if (at >= 0) {
+    resetUnit(ctx, spec.id);
+    cursor.stale!.splice(at, 1);
+    if (cursor.stale!.length === 0) delete cursor.stale;
+  }
+  return ensureUnit(ctx, spec);
+}
+
 /// One chapter's review-pass chain: structure -> character -> ... ->
 /// sentence-shape, each pass allowed up to MAX_REVIEW_ROUNDS attempts
 /// (changes_requested -> a revision card -> the same pass again) before
@@ -687,7 +753,7 @@ function latestReviewNotes(projectId: string, chapter: number, pass: ReviewPass)
 function advanceCursor(ctx: Ctx, cursor: ReviewCursor): boolean {
   const pass = REVIEW_PASSES[cursor.pass_index];
   if (cursor.waiting === "review") {
-    const unit = ensureUnit(ctx, { id: `review:${cursor.chapter}:${pass}`, kind: "review", chapter: cursor.chapter, pass, priority: 2 });
+    const unit = ensureFresh(ctx, cursor, { id: `review:${cursor.chapter}:${pass}`, kind: "review", chapter: cursor.chapter, pass, priority: 2 });
     if (unit.status !== "done") return false;
 
     const verdict = latestReviewVerdict(ctx.projectId, cursor.chapter, pass);
@@ -705,7 +771,7 @@ function advanceCursor(ctx: Ctx, cursor: ReviewCursor): boolean {
 
   // waiting === "revision"
   const notes = latestReviewNotes(ctx.projectId, cursor.chapter, pass);
-  const unit = ensureUnit(ctx, { id: `revision:review:${cursor.chapter}:${pass}`, kind: "revision", chapter: cursor.chapter, priority: 1, feedbackText: notes });
+  const unit = ensureFresh(ctx, cursor, { id: `revision:review:${cursor.chapter}:${pass}`, kind: "revision", chapter: cursor.chapter, priority: 1, feedbackText: notes });
   if (unit.status !== "done") return false;
 
   cursor.round += 1;
@@ -963,8 +1029,9 @@ export function requestStart(projectId: string): { ok: true } {
 /// waiting are picked up) and advances to "chapters". Refused while a
 /// pilot revision from feedback is still open, or while the redraft from
 /// the owner's last review is still being cold-read — the owner should see
-/// the revised pilot before committing the rest of the book to it. Closes
-/// the pilot's open review round as approved.
+/// the revised pilot before committing the rest of the book to it — or
+/// while the open round still has notes the owner hasn't sent (SW-15).
+/// Closes the pilot's open review round as approved.
 export function requestApprove(projectId: string): { ok: true; round: number } {
   const engine = getEngine(projectId);
   if (engine.stage !== "pilot_review") {
@@ -975,6 +1042,7 @@ export function requestApprove(projectId: string): { ok: true; round: number } {
   if (latestRound(getOwnerReview(projectId, 1))?.status === "changes_requested") {
     throw new PipelineConflict("the pilot is being redrafted from your review — approve the new draft once its cold read is done");
   }
+  assertNoUnsentNotes(projectId, 1);
 
   engine.approved = true;
   engine.stage = "chapters";
@@ -1011,6 +1079,21 @@ export function requestApprove(projectId: string): { ok: true; round: number } {
 
 const redraftMessage = (chapter: number, round: number) =>
   `chapter ${chapter} is being redrafted from your round ${round} review — the new draft comes back as round ${round + 1} once its cold read is done`;
+
+/// Approval refuses to leave notes behind (SW-15): the open round's notes
+/// reach the writer only through "Request changes", so an approval with
+/// notes still on the draft would drop them without anyone acting on them.
+/// The owner sends them (Request changes) or deletes the ones they no
+/// longer want, then approves. Same 409 as the gate's other refusals.
+function assertNoUnsentNotes(projectId: string, chapter: number): void {
+  const notes = unsentNotes(getOwnerReview(projectId, chapter));
+  if (notes.length === 0) return;
+  const them = notes.length === 1 ? "it" : "them";
+  throw new PipelineConflict(
+    `chapter ${chapter} still has ${notes.length} note${notes.length === 1 ? "" : "s"} you haven't sent (${notes.map((n) => n.id).join(", ")}) — ` +
+      `request changes to send ${them} to the writer, or delete ${them}, before approving`,
+  );
+}
 
 /// The chapter text the owner may review now, or why not: from the owner
 /// gate on, a chapter with submitted text whose cold read (C1) and fixes
@@ -1113,6 +1196,7 @@ export function requestOwnerDecision(
   const chapterDoc = reviewableChapter(engine, projectId, chapter);
 
   if (decision === "approve") {
+    assertNoUnsentNotes(projectId, chapter);
     const last = latestRound(getOwnerReview(projectId, chapter));
     if (last && last.status === "approved" && last.decided_revision === chapterDoc.revision) return { ok: true, round: last.round };
     return { ok: true, round: recordApproval(projectId, chapter) };

@@ -604,12 +604,14 @@ describe("dash model: owner review rounds (SW-12)", () => {
     expect(at.map((xs: any[]) => xs.map((x) => x.id))).toEqual([["n4"], ["n1"], ["n2"], [], ["n3"]]);
   });
 
-  it("the pilot at the gate is reviewable; an open round's notes count; approve stays open", () => {
+  it("the pilot at the gate is reviewable; an open round's notes count and hold Approve until sent or deleted (SW-15)", () => {
     const s = st({ stage: "pilot_review", units: clearPilot, docs: [doc(1)], coldReads: clearCold, ownerReviews: [{ chapter: 1, rounds: [{ round: 1, chapter_revision: 2, status: "open", notes: [note("n1", 3)], opened_at: "" }] }] });
     const r = D.reviewInfo(s, 1, null);
     expect(r).toMatchObject({ canReview: true, why: null, roundNo: 1, revision: 2, pending: null });
     expect(r.notes.map((n: any) => n.id)).toEqual(["n1"]);
-    expect(D.gateInfo(s)).toMatchObject({ active: true, redraft: false, canApprove: true });
+    expect(D.gateInfo(s)).toMatchObject({ active: true, redraft: false, unsent: 1, canApprove: false });
+    const emptied = st({ stage: "pilot_review", units: clearPilot, docs: [doc(1)], coldReads: clearCold, ownerReviews: [{ chapter: 1, rounds: [{ round: 1, chapter_revision: 2, status: "open", notes: [], opened_at: "" }] }] });
+    expect(D.gateInfo(emptied)).toMatchObject({ unsent: 0, canApprove: true });
   });
 
   it("a requested round blocks approval and reports where the redraft stands", () => {

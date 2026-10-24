@@ -158,3 +158,29 @@ export function revisionProblem(chapter: number, round: OwnerReviewRound, chapte
   }
   return null;
 }
+
+/// The round the chapter is being redrafted for (the owner requested
+/// changes and the redraft hasn't cleared its cold read yet), or null.
+/// Review passes wait for it: they read the text the owner will see next.
+export function underRevision(doc: OwnerReviewDoc | null): OwnerReviewRound | null {
+  const last = latestRound(doc);
+  return last && last.status === "changes_requested" ? last : null;
+}
+
+/// The round whose redraft the writer still owes (SW-15): under revision
+/// and the card's work isn't in yet (`revisionProblem`), so the chapter text
+/// is the draft the owner sent back — a cold read or its fixes on it would
+/// be thrown away. Null once the redraft (or an answers-only resolution)
+/// is in and the redraft's own cold read may run.
+export function redraftPending(doc: OwnerReviewDoc | null, chapter: number, chapterRevision: number | null): OwnerReviewRound | null {
+  const round = underRevision(doc);
+  return round && revisionProblem(chapter, round, chapterRevision) !== null ? round : null;
+}
+
+/// The open round's notes the owner hasn't sent (SW-15): approving would
+/// leave them with no writer ever seeing them, so approval waits until
+/// they're sent (Request changes) or deleted.
+export function unsentNotes(doc: OwnerReviewDoc | null): OwnerNote[] {
+  const last = latestRound(doc);
+  return last && last.status === "open" ? last.notes : [];
+}

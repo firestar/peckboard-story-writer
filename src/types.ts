@@ -519,6 +519,13 @@ export interface ReviewCursor {
   pass_index: number; // index into REVIEW_PASSES
   round: number; // attempt at the current pass, 1-based, capped at MAX_REVIEW_ROUNDS
   waiting: "review" | "revision" | "done";
+  /// The owner sent the chapter back for a redraft while its passes ran: they
+  /// pause until the redraft clears its cold read, then restart from the
+  /// first pass on the new text (SW-15).
+  redraft?: boolean;
+  /// After that restart: the chapter's review / review-revision unit ids from
+  /// before it, each reset to a fresh card when its pass comes round again.
+  stale?: string[];
 }
 
 export interface EngineState {

@@ -322,6 +322,7 @@ html.sw-noscroll { overflow: hidden; }
 .sw-gate-text p { margin: 2px 0 0; font-size: .875rem; color: var(--text); max-width: 72ch; }
 .sw-gate-actions, .sw-drawer-approve { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sw-confirm-text { font-size: .8125rem; font-weight: 600; color: var(--text); }
+.sw-approve-hint { display: block; margin-top: 2px; font-size: .75rem; color: var(--text3); }
 .sw-gate.not-ready { background: var(--surface); border-color: var(--border-strong); border-style: dashed; }
 .sw-gate.not-ready .sw-gate-icon { color: var(--text2); border-color: var(--border-strong); background: var(--surface2); }
 .sw-gate.not-ready .sw-kicker { color: var(--text2); }

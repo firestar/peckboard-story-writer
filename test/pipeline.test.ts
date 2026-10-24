@@ -506,6 +506,127 @@ describe("owner review rounds (SW-12)", () => {
   });
 });
 
+describe("SW-15: open notes on approve; no passes during a redraft", () => {
+  it("refuses to approve while the round has notes not sent — send or delete them first", () => {
+    toPilotReview();
+    note(1, { kind: "wrong", start_line: 5, body: "Too fast." });
+    note(1, { kind: "shorten", start_line: 7 });
+
+    const refused = authed("POST", "/pipeline/approve");
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toContain("2 notes you haven't sent (n1, n2)");
+    expect(authed("POST", "/review/decide", { chapter: 1, decision: "approve" }).status).toBe(409);
+    let st = authed("GET", "/state").body;
+    expect(st.engine).toMatchObject({ stage: "pilot_review", approved: false });
+    expect(st.owner_reviews[0].rounds[0]).toMatchObject({ status: "open" });
+    expect(open(cards.cards).find((c) => c.title === "Chapter 2")!.blocked).toBe(true);
+
+    // Dismissing every note lets the approval through.
+    authed("POST", "/review/note/delete", { chapter: 1, id: "n1" });
+    expect(authed("POST", "/pipeline/approve").status).toBe(409);
+    authed("POST", "/review/note/delete", { chapter: 1, id: "n2" });
+    expect(authed("POST", "/pipeline/approve").body).toMatchObject({ ok: true, round: 1 });
+    st = authed("GET", "/state").body;
+    expect(st.engine.stage).toBe("chapters");
+    expect(st.owner_reviews[0].rounds[0]).toMatchObject({ status: "approved", notes: [] });
+
+    // Same for any other chapter's Approve chapter.
+    submitAndFinish(cards, cards.cards.find((c) => c.title === "Chapter 2")!.id, 2);
+    finishColdRead(cards, 2);
+    note(2, { kind: "comment", start_line: 3, body: "Show the harbour." });
+    expect(authed("POST", "/review/decide", { chapter: 2, decision: "approve" }).status).toBe(409);
+    expect(ownerReview(2).rounds[0].status).toBe("open");
+    authed("POST", "/review/note/delete", { chapter: 2, id: "n1" });
+    expect(authed("POST", "/review/decide", { chapter: 2, decision: "approve" }).body).toMatchObject({ ok: true, round: 1 });
+  });
+
+  it("refuses cold reads and cold-read fixes on the draft the owner sent back until the redraft is in", () => {
+    toPilotReview(["Who is Mara?"]);
+    note(1, { kind: "wrong", start_line: 5, body: "Too fast." });
+    authed("POST", "/review/decide", { chapter: 1, decision: "changes" });
+
+    setSession("stray-reader");
+    expect(invoke("story_cold_read_get_text", { chapter: 1 }).error).toContain("being redrafted from the owner's round 1 review");
+    const stale = invoke("story_submit_cold_read", { chapter: 1, items: [], first_three_lines: { narrator: true, want: true, tension: true, clear: true }, characters: [] });
+    expect(stale.error).toContain("a cold read on the old draft would be thrown away");
+    setSession("session-1");
+    expect(invoke("story_submit_cold_read_fixes", { chapter: 1, fixes: [{ item: "c1", fix: "x" }] }).error).toContain("cold-read fixes on the old draft");
+    expect(invoke("story_report_review", { chapter: 1, pass: "structure", verdict: "pass", notes: "ok" }).error).toContain("review passes wait");
+    expect(authed("GET", "/state").body.cold_reads.find((d: any) => d.chapter === 1).attempt).toBe(1);
+
+    // The redraft is in: its fresh cold read is accepted.
+    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT.replace("Mara forgave him", "Mara did not look at him") });
+    invoke("story_submit_owner_review_fixes", { chapter: 1, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "She stays silent." }] });
+    finishCard(cards, open(cards.cards).find((c) => c.title.includes("owner review"))!.id);
+    finishColdRead(cards, 1, ["Why is Mara cold?"]);
+    expect(ownerReview(1).rounds.map((r: any) => r.status)).toEqual(["revised", "open"]);
+  });
+
+  it("review stage: holds a chapter's passes while it's redrafted, then restarts them on the new text", () => {
+    setupBrief({ basics: { ...briefFixture().basics, chapter_count: 1 } });
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT });
+    finishCard(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id);
+    finishColdRead(cards, 1);
+    authed("POST", "/pipeline/approve");
+    expect(authed("GET", "/state").body.engine.stage).toBe("review");
+    const structure1 = open(cards.cards).find((c) => c.title.includes("(structure)"))!;
+
+    // The owner sends chapter 1 back while its structure pass is running.
+    note(1, { kind: "wrong", start_line: 5, body: "Too fast." });
+    authed("POST", "/review/decide", { chapter: 1, decision: "changes" });
+    expect(invoke("story_report_review", { chapter: 1, pass: "structure", verdict: "pass", notes: "ok" }).error).toContain("being redrafted");
+    finishCard(cards, structure1.id); // the reviewer gives up on the old draft
+    let st = authed("GET", "/state").body;
+    expect(st.engine.cursors["1"]).toMatchObject({ pass_index: 0, redraft: true });
+    expect(open(cards.cards).some((c) => c.title.includes("(character)"))).toBe(false);
+    expect(st.engine.stage).toBe("review");
+
+    // Redraft in; its cold read runs — passes still held, reports still refused.
+    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT.replace("Mara forgave him", "Mara did not look at him") });
+    invoke("story_submit_owner_review_fixes", { chapter: 1, round: 2, resolutions: [{ note: "n1", action: "fixed", how: "She stays silent." }] });
+    finishCard(cards, open(cards.cards).find((c) => c.title.includes("owner review"))!.id);
+    expect(open(cards.cards).some((c) => c.title.includes("(structure)") || c.title.includes("(character)"))).toBe(false);
+    expect(invoke("story_report_review", { chapter: 1, pass: "structure", verdict: "pass", notes: "ok" }).error).toContain("being redrafted");
+    finishColdRead(cards, 1);
+
+    // Settled: the passes restart from structure on the new draft, with a fresh card.
+    st = authed("GET", "/state").body;
+    expect(st.engine.cursors["1"]).toMatchObject({ pass_index: 0, round: 1, waiting: "review" });
+    expect(st.engine.cursors["1"].redraft).toBeUndefined();
+    expect(st.engine.units["review:1:structure"]).toMatchObject({ status: "open", attempt: 2 });
+    const structure2 = open(cards.cards).find((c) => c.title.includes("(structure)"))!;
+    expect(structure2.id).not.toBe(structure1.id);
+    expect(invoke("story_report_review", { chapter: 1, pass: "structure", verdict: "pass", notes: "clean" }).ok).toBe(true);
+    finishCard(cards, structure2.id);
+    expect(open(cards.cards).some((c) => c.title.includes("(character)"))).toBe(true);
+  });
+
+  it("chapter stage: a later chapter's cold read waits for an earlier chapter's redraft (C1)", () => {
+    toPilotReview();
+    authed("POST", "/pipeline/approve");
+    submitAndFinish(cards, cards.cards.find((c) => c.title === "Chapter 2")!.id, 2);
+    finishColdRead(cards, 2);
+    note(2, { kind: "expand", start_line: 3 });
+    authed("POST", "/review/decide", { chapter: 2, decision: "changes" });
+
+    submitAndFinish(cards, cards.cards.find((c) => c.title === "Chapter 3")!.id, 3);
+    expect(authed("GET", "/state").body.engine.units["cold_read:3"]).toBeUndefined();
+
+    invoke("story_submit_chapter", { chapter: 2, markdown: "# Chapter 2\n\nMore harbour." });
+    invoke("story_submit_owner_review_fixes", { chapter: 2, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "Added the harbour." }] });
+    finishCard(cards, open(cards.cards).find((c) => c.title.startsWith("Revise chapter 2"))!.id);
+    let units = authed("GET", "/state").body.engine.units;
+    expect(units["cold_read:2"]).toMatchObject({ status: "open", attempt: 2 });
+    expect(units["cold_read:3"]).toBeUndefined(); // chapter 2 isn't settled yet
+
+    finishColdRead(cards, 2);
+    units = authed("GET", "/state").body.engine.units;
+    expect(units["revision:owner:2:1"].settled).toBe(true);
+    expect(units["cold_read:3"]).toMatchObject({ status: "open" });
+  });
+});
 describe("pipeline engine: review changes_requested loop", () => {
   it("creates a revision on changes_requested and re-runs the same pass with a fresh card", () => {
     setupBrief({ basics: { ...briefFixture().basics, chapter_count: 1 } });

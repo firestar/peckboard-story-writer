@@ -45,6 +45,7 @@ import {
   upsertSection,
 } from "./docs";
 import { chapterFileName, writeBrief, writeChapter, writeColdRead, writeOwnerReview, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
+import { redraftPending, underRevision } from "./ownerReview";
 import { Brief, ChapterDoc, ColdReadDoc, ColdReadItem, OwnerNoteAction, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, StageId, nowIso } from "./types";
 
 const SESSION_ROLE_ERRORS: Record<SessionRole, string> = {
@@ -218,6 +219,15 @@ export function toolReportReview(args: any, _context: any): any {
   guardSession(projectId, "context");
   const { chapter, pass, verdict, notes } = args;
   const rule: string | null = typeof args.rule === "string" && args.rule.trim().length > 0 ? args.rule : null;
+  // Review passes wait for an owner redraft (SW-15): this verdict would be
+  // on text that's about to change. The pass re-runs on the new draft.
+  const redrafting = underRevision(getOwnerReview(projectId, chapter));
+  if (redrafting) {
+    throw new Error(
+      `chapter ${chapter} is being redrafted from the owner's round ${redrafting.round} review — review passes wait until the ` +
+        `redraft has cleared its cold read, then re-run on the new text. Don't report on the old draft.`,
+    );
+  }
 
   const existing = getReview(projectId, chapter, pass) ?? { chapter, pass, rounds: [] as ReviewRound[] };
   const round: ReviewRound = { verdict, notes, at: nowIso() };
@@ -248,6 +258,18 @@ export function toolReportReview(args: any, _context: any): any {
   return { ok: true, round };
 }
 
+/// No cold read or cold-read fix on a chapter whose redraft the writer still
+/// owes the owner (SW-15): it would read or patch the draft the owner sent
+/// back. Once the redraft is in, the pipeline makes a fresh cold-read card.
+function refuseDuringRedraft(projectId: string, chapter: number, revision: number | null, what: string): void {
+  const round = redraftPending(getOwnerReview(projectId, chapter), chapter, revision);
+  if (!round) return;
+  throw new Error(
+    `chapter ${chapter} is being redrafted from the owner's round ${round.round} review and the new draft isn't in yet — ` +
+      `${what} on the old draft would be thrown away. The pipeline creates a fresh cold-read card once the redraft is submitted.`,
+  );
+}
+
 /// Strip any HTML-comment markers (e.g. the `<!-- story-writer:unit=... -->`
 /// the pipeline stamps onto card descriptions) from chapter text before a
 /// cold reader ever sees it — belt and suspenders, since chapter markdown
@@ -269,6 +291,7 @@ export function toolColdReadGetText(args: any, _context: any): any {
 
   const doc = getChapter(projectId, chapter);
   if (!doc) throw new Error(`chapter ${chapter} has no submitted text yet`);
+  refuseDuringRedraft(projectId, chapter, doc.revision, "a cold read");
 
   const previous: { chapter: number; text: string }[] = [];
   const missingPrevious: number[] = [];
@@ -294,6 +317,7 @@ export function toolSubmitColdRead(args: any, _context: any): any {
 
   const chapterDoc = getChapter(projectId, chapter);
   if (!chapterDoc) throw new Error(`chapter ${chapter} has no submitted text yet`);
+  refuseDuringRedraft(projectId, chapter, chapterDoc.revision, "a cold read");
 
   const existing = getColdRead(projectId, chapter);
   const raw: any[] = Array.isArray(args.items) ? args.items : [];
@@ -340,6 +364,7 @@ export function toolSubmitColdReadFixes(args: any, _context: any): any {
 
   const doc = getColdRead(projectId, chapter);
   if (!doc) throw new Error(`chapter ${chapter} has no cold-read report yet`);
+  refuseDuringRedraft(projectId, chapter, getChapter(projectId, chapter)?.revision ?? null, "cold-read fixes");
 
   for (const f of Array.isArray(args.fixes) ? args.fixes : []) {
     const item = doc.items.find((i) => i.id === f.item);

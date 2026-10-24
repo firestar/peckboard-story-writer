@@ -365,7 +365,10 @@ export function gateInfo(state) {
     // card, then the redraft's fresh cold read).
     redraft: active && !!review.pending,
     review,
-    canApprove: active && !openPilotRevision && coldClear && !review.pending,
+    // Notes on the draft the owner hasn't sent: approval waits until they're
+    // sent (Request changes) or deleted (SW-15, the server refuses too).
+    unsent: review.notes.length,
+    canApprove: active && !openPilotRevision && coldClear && !review.pending && review.notes.length === 0,
     remaining: Math.max(0, n - 1),
     approved: engine.approved,
   };

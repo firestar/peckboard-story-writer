@@ -221,8 +221,9 @@ status, worker status, grid cells, record tables) lives in
 - Owner gate: while the stage is `pilot_review` a banner shows the round
   ("Waiting on you · round 2", notes not sent yet, earlier rounds) and
   offers **Read & review pilot**, **Request changes** and **Approve pilot…**
-  (confirm step, which warns about notes not sent; disabled while a
-  redraft runs) and notes what the pilot's cold read found. After a
+  (confirm step; disabled while a redraft runs, and while the round has
+  notes not sent — send or delete them first) and notes what the pilot's
+  cold read found. After a
   request the banner follows the redraft — the writer working through
   your notes, then the fresh cold read of the redraft — with the session
   link (or **Retry** if a card failed), until the redraft comes back as
@@ -355,6 +356,16 @@ card's own description.
   once they clear the round closes as redrafted and the next round opens
   on the new draft. The chapter stage waits for pending redrafts. Rounds
   are mirrored to `story/reviews/chapter-NN-owner.md`.
+- No pass on a draft that's being replaced (SW-15): approving (gate or
+  chapter) answers 409 while the open round still has notes — send them
+  (Request changes) or delete them first, so a note never sits on an
+  approved draft with no writer acting on it. While a chapter's redraft is
+  owed, `story_cold_read_get_text` / `story_submit_cold_read` /
+  `story_submit_cold_read_fixes` refuse it, and `story_report_review`
+  refuses until the redraft's cold read cleared. In the chapter stage a
+  chapter being redrafted doesn't count as cleared, so later chapters'
+  cold reads wait (C1). In the review stage its passes hold, then restart
+  from structure on the new text with fresh cards.
 - Each review pass allows up to `MAX_REVIEW_ROUNDS` (2) attempts
   (`changes_requested` -> a revision card -> the same pass again) before
   moving on regardless, so one stubborn pass can't stall a chapter forever.
@@ -403,4 +414,7 @@ owner review (SW-12): [gate, round 1](docs/screenshots/review-gate-round-1.png),
 [round history](docs/screenshots/review-tab-rounds-history.png),
 [grid: approved](docs/screenshots/review-grid-approved.png),
 [dark at 420 px, bottom sheet](docs/screenshots/review-dark-mobile-sheet.png),
-[dark rounds](docs/screenshots/review-dark-rounds.png).
+[dark rounds](docs/screenshots/review-dark-rounds.png);
+approve waits for unsent notes (SW-15): [gate](docs/screenshots/review-gate-unsent-notes.png),
+[pilot drawer](docs/screenshots/review-drawer-approve-held.png),
+[Approve chapter](docs/screenshots/review-chapter-approve-held.png).

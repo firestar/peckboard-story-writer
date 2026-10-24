@@ -210,12 +210,10 @@ export function mountDashboard(container, opts) {
   let confirming = false; // the Approve confirmation is showing
   const busy = new Set(); // "approve", "export", "retry:<id>", "note", "note:<id>", "decide:<n>"
   // Owner review (SW-12): the note popover over a passage, the note being
-  // edited, the open "Request changes" form, and which chapter's "approve
-  // with notes not sent" confirmation is showing.
+  // edited, and the open "Request changes" form.
   let pop = null; // {chapter, start, end, quote, x, y, kind, draft, error}
   let editing = null; // {chapter, id, draft}
   let requesting = null; // {chapter, summary, toRules}
-  let confirmCh = null;
   let dragging = false; // a mouse button is held in the annotatable text (a selection in progress)
   let drawer = null; // {chapter, tab}
   let drawerOpenerFid = null;
@@ -430,7 +428,6 @@ export function mountDashboard(container, opts) {
   }
 
   function approveChapter(n) {
-    confirmCh = null;
     return act(`decide:${n}`, () => postJSON(`${P}/review/decide`, { chapter: n, decision: "approve" }), `Chapter ${n} approved.`, true);
   }
 
@@ -491,7 +488,6 @@ export function mountDashboard(container, opts) {
       pop = null;
       editing = null;
       requesting = null;
-      confirmCh = null;
     }
     drawer = { chapter: n, tab: which || "text" };
     drawerNotice = null;
@@ -509,7 +505,6 @@ export function mountDashboard(container, opts) {
     pop = null;
     editing = null;
     requesting = null;
-    confirmCh = null;
     focusFid = drawerOpenerFid;
     render();
   }
@@ -779,21 +774,21 @@ export function mountDashboard(container, opts) {
     );
   }
 
+  /// Why Approve waits while the round has notes not sent (SW-15).
+  function unsentHint(count) {
+    const them = count === 1 ? "it" : "them";
+    return `Send your ${plural(count, "note")} with Request changes, or delete ${them}, before approving.`;
+  }
+
   function approveControls(where) {
     const g = D.gateInfo(state);
     const approving = busy.has("approve");
-    const unsent = g.review.notes.length;
     if (confirming) {
-      const next = g.remaining ? `write the other ${plural(g.remaining, "chapter")} from it` : "start the review passes";
       return [
         h(
           "span",
           { class: "sw-confirm-text" },
-          unsent
-            ? `Approve without sending your ${plural(unsent, "note")}, and ${next}?`
-            : g.remaining
-              ? `Write the other ${plural(g.remaining, "chapter")} from this pilot?`
-              : "Approve the pilot and start the review passes?",
+          g.remaining ? `Write the other ${plural(g.remaining, "chapter")} from this pilot?` : "Approve the pilot and start the review passes?",
         ),
         h(
           "button",
@@ -831,7 +826,9 @@ export function mountDashboard(container, opts) {
               ? "A pilot revision is still open — approve once it's in."
               : !g.coldClear
                 ? "Opens once every cold-read item on the pilot is fixed."
-                : null,
+                : g.unsent
+                  ? unsentHint(g.unsent)
+                  : null,
           dataset: { fid: `${where}.approve` },
           onclick: () => {
             confirming = true;
@@ -882,9 +879,11 @@ export function mountDashboard(container, opts) {
       : [
           h("strong", null, "Your pilot chapter is ready. "),
           "Read it and leave notes on any passage. ",
-          g.remaining
-            ? `Approve it to write the other ${plural(g.remaining, "chapter")} in parallel — or request changes for a redraft first.`
-            : "Approve it to start the review passes — or request changes for a redraft first.",
+          unsent
+            ? `You have ${plural(unsent, "note")} not sent yet — request changes to send ${unsent === 1 ? "it" : "them"} to the writer, or delete ${unsent === 1 ? "it" : "them"}, before approving.`
+            : g.remaining
+              ? `Approve it to write the other ${plural(g.remaining, "chapter")} in parallel — or request changes for a redraft first.`
+              : "Approve it to start the review passes — or request changes for a redraft first.",
         ];
     return h(
       "section",
@@ -3135,7 +3134,14 @@ export function mountDashboard(container, opts) {
         "span",
         { class: "sw-review-count" },
         icon("note"),
-        h("span", null, h("strong", null, `Round ${info.roundNo}`), ` · ${count ? `${plural(count, "note")} not sent yet` : "no notes yet"}`),
+        h(
+          "span",
+          null,
+          h("strong", null, `Round ${info.roundNo}`),
+          ` · ${count ? `${plural(count, "note")} not sent yet` : "no notes yet"}`,
+          // Approve waits for them (SW-15): say so where the count is.
+          count ? h("span", { class: "sw-approve-hint" }, `Send or delete ${count === 1 ? "it" : "them"} to approve.`) : null,
+        ),
       ),
       h("span", { class: "sw-spacer" }),
       gate && g.openPilotRevision
@@ -3149,7 +3155,6 @@ export function mountDashboard(container, opts) {
               onclick: () => {
                 requesting = { chapter: n, summary: "", toRules: true };
                 confirming = false;
-                confirmCh = null;
                 focusFid = "req.summary";
                 render();
               },
@@ -3161,43 +3166,22 @@ export function mountDashboard(container, opts) {
     );
   }
 
+  /// Approve chapter. Waits while the round has notes not sent (SW-15):
+  /// they reach the writer only through Request changes, so the owner sends
+  /// or deletes them first — the server refuses an approval with them too.
   function approveChapterControls(n, info) {
     const key = `decide:${n}`;
     const count = info.notes.length;
     if (info.approved && !count) return badge("ok", `Approved · revision ${info.revision}`);
-    if (confirmCh === n) {
-      return [
-        h("span", { class: "sw-confirm-text" }, `Approve without sending your ${plural(count, "note")}?`),
-        h("button", { class: "sw-btn", type: "button", disabled: busy.has(key), dataset: { fid: "ch.approve.yes" }, onclick: () => approveChapter(n) }, busy.has(key) ? h("span", { class: "sw-spinner" }) : icon("check"), "Approve"),
-        h(
-          "button",
-          {
-            class: "sw-btn secondary",
-            type: "button",
-            dataset: { fid: "ch.approve.no" },
-            onclick: () => {
-              confirmCh = null;
-              focusFid = "ch.approve";
-              render();
-            },
-          },
-          "Cancel",
-        ),
-      ];
-    }
     return h(
       "button",
       {
         class: "sw-btn",
         type: "button",
-        disabled: busy.has(key),
+        disabled: busy.has(key) || count > 0,
+        title: count ? unsentHint(count) : null,
         dataset: { fid: "ch.approve" },
-        onclick: () => {
-          if (!count) return approveChapter(n);
-          confirmCh = n;
-          focusFid = "ch.approve.yes";
-          render();
-        },
+        onclick: () => approveChapter(n),
       },
       busy.has(key) ? h("span", { class: "sw-spinner" }) : icon("check"),
       "Approve chapter",
