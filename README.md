@@ -37,7 +37,23 @@ curl -fsSL https://raw.githubusercontent.com/extism/js-pdk/main/install.sh -o in
 sudo bash install.sh
 ```
 
-## Install (local PeckBoard)
+## Install from the registry
+
+Releases are listed in the [PeckBoard/creative-flows](https://github.com/PeckBoard/creative-flows)
+registry.
+
+1. **Settings -> Plugin Registry**, **Repositories** tab: add
+   `PeckBoard/creative-flows`.
+2. **Browse** tab: Story Writer -> **Install** (PeckBoard checks the
+   download against the registry's sha256).
+3. **Settings -> Plugins**: approve Story Writer's declared hooks. A plugin
+   is inert until approved.
+4. Open a project's board, click the **⋯** project menu next to
+   **Add Card**, and choose **Story**. Reload the page once if the item
+   isn't there yet.
+5. Optionally set the `writer_model` / `reviewer_model` settings (below).
+
+## Install (local build)
 
 1. Build `dist/plugin.wasm` (above).
 2. Copy it into your PeckBoard data directory's plugin folder:
@@ -47,7 +63,7 @@ sudo bash install.sh
    picks up the new file.
 4. Open **Settings -> Plugins** and approve Story Writer's declared hooks
    and permissions — a plugin is inert until approved.
-5. Open any project; a **Story** tab appears alongside the board.
+5. Open any project's board: **⋯** project menu -> **Story**.
 6. Optionally set the `writer_model` / `reviewer_model` settings (model ids
    in `provider:model[@account]` form) — the pipeline assigns these to the
    cards it creates.
