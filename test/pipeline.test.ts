@@ -408,6 +408,59 @@ describe("pipeline engine: cold-read stage (SW-9)", () => {
     finishColdRead(cards, 3);
     expect(authed("GET", "/state").body.engine.stage).toBe("review");
   });
+  it("runs cold reads in chapter order: chapter 3's waits until chapter 2's chain (read + fix) clears (C1)", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    submitAndFinish(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id, 1);
+    finishColdRead(cards, 1);
+    authed("POST", "/pipeline/approve");
+
+    const ch2 = cards.cards.find((c) => c.title === "Chapter 2")!;
+    const ch3 = cards.cards.find((c) => c.title === "Chapter 3")!;
+    const coldReadCards = () => cards.cards.filter((c) => c.title.startsWith("Cold read —")).map((c) => c.title);
+    const units = () => authed("GET", "/state").body.engine.units;
+
+    // Chapter 3's draft lands first: no cold read for it while chapter 2 is unwritten.
+    submitAndFinish(cards, ch3.id, 3);
+    expect(coldReadCards()).not.toContain("Cold read — chapter 3");
+    expect(units()["cold_read:3"]).toBeUndefined();
+    dispatch("timer.tick", { now: "" });
+    expect(units()["cold_read:3"]).toBeUndefined();
+
+    // Chapter 2 drafted: only its cold read opens.
+    submitAndFinish(cards, ch2.id, 2);
+    expect(open(cards.cards).filter((c) => c.title.startsWith("Cold read —")).map((c) => c.title)).toEqual(["Cold read — chapter 2"]);
+
+    // Chapter 2's cold read reports an item: still no chapter 3 cold read while its fix is open.
+    setSession("cold-2-order");
+    invoke("story_cold_read_get_text", { chapter: 2 });
+    invoke("story_submit_cold_read", {
+      chapter: 2,
+      items: [{ category: "other", text: "Who is Bo?" }],
+      first_three_lines: { narrator: true, want: true, tension: true, clear: true },
+      characters: [],
+    });
+    setSession("session-1");
+    finishCard(cards, open(cards.cards).find((c) => c.title === "Cold read — chapter 2")!.id);
+    const fixCard = open(cards.cards).find((c) => c.title === "Cold-read fixes — chapter 2")!;
+    expect(fixCard).toBeTruthy();
+    expect(units()["cold_read:3"]).toBeUndefined();
+
+    invoke("story_submit_cold_read_fixes", { chapter: 2, fixes: [{ item: "c1", fix: "Named Bo as the ferryman." }] });
+    finishCard(cards, fixCard.id);
+    expect(open(cards.cards).some((c) => c.title === "Cold read — chapter 3")).toBe(true);
+
+    // The chapter 3 reader now sees every earlier chapter.
+    setSession("cold-3-order");
+    const text = invoke("story_cold_read_get_text", { chapter: 3 });
+    expect(text.missing_previous).toEqual([]);
+    expect(text.previous.map((p: any) => p.chapter)).toEqual([1, 2]);
+    setSession("session-1");
+    finishColdRead(cards, 3);
+    expect(authed("GET", "/state").body.engine.stage).toBe("review");
+  });
+
 
   it("fails the cold-read unit if its card finishes without story_submit_cold_read, and a retry recovers it", () => {
     setupBrief();

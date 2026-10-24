@@ -98,6 +98,9 @@ export interface ColdReadFixCardInput {
   brief: PromptBrief | null;
   overrides?: Record<string, string>;
   items: string[];
+  /// The cold reader's characters in order of first appearance, as
+  /// "Name: what the text said about them" lines.
+  characters?: string[];
 }
 
 // The craft needed to actually fix clarity issues, not just the checklist.
@@ -109,7 +112,7 @@ const COLD_READ_FIX_LESSON_IDS = ["reader.intro-characters", "reader.openings", 
 /// `coldReadItemTexts`) so the writer can reference the same id in
 /// story_submit_cold_read_fixes.
 export function renderColdReadFixCard(input: ColdReadFixCardInput): ColdReadCardSpec {
-  const { chapter, brief, overrides = {}, items } = input;
+  const { chapter, brief, overrides = {}, items, characters = [] } = input;
   const fmt = formatOf(brief);
   const title = `Cold-read fixes — chapter ${chapter}`;
 
@@ -122,11 +125,17 @@ export function renderColdReadFixCard(input: ColdReadFixCardInput): ColdReadCard
       ? `## Cold-read report\n\n${items.map((it) => `- ${clip(it, 2000)}`).join("\n")}`
       : "## Cold-read report\n\n(no items)";
 
+  const charactersMd =
+    characters.length > 0
+      ? `## Characters in order of first appearance (cold reader)\n\n${characters.map((c, i) => `${i + 1}. ${clip(c, 1000)}`).join("\n")}`
+      : "## Characters in order of first appearance (cold reader)\n\n(none reported)";
+
   const taskMd = [
     "## Task",
     "",
     "1. Read the brief and the records (story_get_brief, story_get_records).",
-    "2. Read the cold-read report above: every item (each with its id, category and location) and the character first-appearance list.",
+    "2. Read the cold-read report above: every item (each with its id, category and location) and the character first-appearance list" +
+      " — check each character's first appearance gives the reader what records.characters[].first_intro promises.",
     "3. Fix every confusion item in the chapter text. C2: confusion is the text's fault, not the reader's —" +
       " fix emphasis, order or clarity; never argue the point was already there.",
     "4. Fix every \"Over-explained / obvious\" item by cutting the quoted line, or by replacing the" +
@@ -148,6 +157,6 @@ export function renderColdReadFixCard(input: ColdReadFixCardInput): ColdReadCard
 
   const lessonsMd = `## Lessons\n\n${renderLessons(COLD_READ_FIX_LESSON_IDS, { format: fmt, overrides })}`;
 
-  const description = [header, briefMd, rulesMd, itemsMd, taskMd, doneMd, lessonsMd].join("\n\n");
+  const description = [header, briefMd, rulesMd, itemsMd, charactersMd, taskMd, doneMd, lessonsMd].join("\n\n");
   return { title, description, role: "writer" };
 }

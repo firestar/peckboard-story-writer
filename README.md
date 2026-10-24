@@ -287,6 +287,10 @@ card's own description.
   starts, so they're visible before the owner approves it. Stories are
   capped at 40 chapters so each per-project doc stays under core's
   256 KiB limit.
+- Chapters are written in parallel, but cold reads run in chapter order:
+  chapter N's cold-read card is created only once chapters 1..N−1 have
+  cleared their cold read (and fix), so the fresh reader gets every
+  earlier chapter in its final text (C1).
 - `POST .../pipeline/{generate,start,approve,feedback,retry}` and
   `GET .../export` (src/http.ts) are the owner/wizard actions: queue
   AI-generate-element cards, start the pipeline (gated on every

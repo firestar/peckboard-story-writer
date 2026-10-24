@@ -186,6 +186,14 @@ function coldReadItemTexts(projectId: string, chapter: number): string[] {
   });
 }
 
+/// The cold reader's first-appearance list as "Name: what the text said"
+/// lines, in the order reported.
+function coldReadCharacterTexts(projectId: string, chapter: number): string[] {
+  const doc = getColdRead(projectId, chapter);
+  if (!doc) return [];
+  return doc.characters.map((c) => `${c.name}: ${c.said}`);
+}
+
 /// Turn a pending unit (status "open", no card yet) into a real card.
 /// Before the run's first create, `in_flight` is persisted so that a run
 /// dying between createCard and the final putEngine is detected next time
@@ -203,6 +211,7 @@ function materialize(ctx: Ctx, unit: Unit, spec: UnitSpec): void {
             brief: toPromptBrief(ctx.brief),
             overrides: overridesOf(ctx.brief),
             items: coldReadItemTexts(ctx.projectId, spec.chapter as number),
+            characters: coldReadCharacterTexts(ctx.projectId, spec.chapter as number),
           })
         : renderCard(spec.kind, {
             brief: toPromptBrief(ctx.brief),
@@ -476,12 +485,20 @@ function advancePilot(ctx: Ctx): boolean {
   return true;
 }
 
+/// Chapters 2..N are written in parallel, but their cold reads run in
+/// order (C1): `cold_read:i` is created only once chapters 1..i−1 have
+/// cleared their cold-read chain, so the fresh reader gets every earlier
+/// chapter as the player will finally see it — never missing, never
+/// mid-fix. Chapter 1 (the pilot) cleared its chain before this stage.
 function advanceChapters(ctx: Ctx): boolean {
   const n = chapterCountOf(ctx);
   let allDone = true;
+  let priorCleared = true;
   for (let i = 2; i <= n; i++) {
     const unit = ensureUnit(ctx, { id: `chapter:${i}`, kind: "chapter", chapter: i, priority: 2, blocked: false });
-    if (unit.status !== "done" || !advanceColdReadChain(ctx, i)) allDone = false;
+    const cleared = priorCleared && unit.status === "done" && advanceColdReadChain(ctx, i);
+    if (!cleared) allDone = false;
+    priorCleared = cleared;
   }
   if (!allDone) return false;
   if (Object.values(ctx.engine.units).some((u) => u.kind === "revision" && u.status === "open")) return false;

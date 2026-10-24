@@ -97,6 +97,18 @@ describe("renderColdReadFixCard", () => {
     expect(card.description).toContain("(no items)");
   });
 
+  it("embeds the cold reader's first-appearance character list, in order", () => {
+    const card = renderColdReadFixCard({
+      chapter: 2,
+      brief: null,
+      items: ["c1 [Other confusion]: x"],
+      characters: ["Jun: the narrator, a courier", "Nadia: a name on a voicemail"],
+    });
+    expect(card.description).toContain("## Characters in order of first appearance (cold reader)");
+    expect(card.description).toContain("1. Jun: the narrator, a courier\n2. Nadia: a name on a voicemail");
+    expect(renderColdReadFixCard({ chapter: 2, brief: null, items: [] }).description).toContain("(none reported)");
+  });
+
   it("records the fault-is-the-text's rule (C2)", () => {
     const card = renderColdReadFixCard({ chapter: 1, brief: null, items: [] });
     expect(card.description).toContain("C2");

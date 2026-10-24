@@ -235,6 +235,8 @@ export interface ChapterState {
 export interface UnexplainedTerm {
   name: string;
   kind: "name" | "term" | "rule";
+  /// Required on submit (src/schemas.ts); optional here only because
+  /// records stored before the schema required it may lack it.
   answered_in?: { chapter: number; scene?: string };
 }
 

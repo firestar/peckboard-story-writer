@@ -62,7 +62,8 @@ export const RECORD_ITEM_SCHEMAS: Record<RecordSection, Schema> = {
             required: ["chapter"],
           },
         },
-        required: ["name", "kind"],
+        // C3: every unexplained item must say where the story answers it.
+        required: ["name", "kind", "answered_in"],
       },
     },
   }),

@@ -168,6 +168,17 @@ describe("dispatch: mcp.tool.invoke", () => {
     expect(invoke("story_submit_records", { records: { characters: [{ id: "c1", role: "lead" }] } }).ok).toBe(true);
   });
 
+  it("story_submit_records requires answered_in on every unexplained scene item (C3)", () => {
+    const sheet = (unexplained: unknown[]) => ({ records: { scene_sheets: [{ id: "s1", chapter: 1, scene: "Dock", unexplained }] } });
+    expect(invoke("story_submit_records", sheet([{ name: "the Ninth", kind: "name" }])).error).toMatch(
+      /scene_sheets\[0\]\.unexplained\[0\]\.answered_in: required/,
+    );
+    expect(invoke("story_submit_records", sheet([{ name: "the Ninth", kind: "name", answered_in: {} }])).error).toMatch(
+      /answered_in\.chapter: required/,
+    );
+    expect(invoke("story_submit_records", sheet([{ name: "the Ninth", kind: "name", answered_in: { chapter: 3, scene: "Archive" } }])).ok).toBe(true);
+  });
+
   it("story_submit_chapter requires chapter and markdown", () => {
     expect(invoke("story_submit_chapter", { chapter: 0 }).error).toMatch(/markdown/);
     expect(invoke("story_submit_chapter", { markdown: "x" }).error).toMatch(/chapter/);
