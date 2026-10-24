@@ -376,6 +376,7 @@ describe("owner review rounds (SW-12)", () => {
     expect(retryCard.id).not.toBe(revisionCard.id);
     expect(retryCard.description).toContain("Already recorded: fixed — Mara stays silent.");
     expect(invoke("story_submit_owner_review_fixes", { chapter: 1, round: 1, resolutions: [{ note: "n7", action: "fixed", how: "x" }] }).error).toContain("unknown note 'n7'");
+    expect(invoke("story_submit_owner_review_fixes", { chapter: 1, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "   " }] }).error).toContain("how must say");
     expect(
       invoke("story_submit_owner_review_fixes", {
         chapter: 1,

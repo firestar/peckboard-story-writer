@@ -377,6 +377,7 @@ export function toolSubmitOwnerReviewFixes(args: any, _context: any): any {
     if (!round.notes.some((n) => n.id === r.note)) {
       throw new Error(`unknown note '${r.note}' in chapter ${chapter} round ${roundNo} (notes: ${round.notes.map((n) => n.id).join(", ") || "none"})`);
     }
+    if (r.how.trim() === "") throw new Error(`note '${r.note}': how must say what changed, the answer, or the conflict`);
   }
   const now = nowIso();
   for (const r of resolutions) {
