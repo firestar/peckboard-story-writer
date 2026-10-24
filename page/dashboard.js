@@ -2,8 +2,9 @@
 // setup wizard has started it. A stage timeline (Records -> Pilot -> your
 // review -> Chapters -> Review passes -> Final) with each stage's cards,
 // worker status and "open session" links; a per-chapter progress grid; the
-// owner's Approve / Send feedback controls (the gate banner and the chapter
-// reader); and viewers for the story records and the story's own rules.
+// owner's review (the gate banner, line notes on the chapter text, review
+// rounds, Approve / Request changes); and viewers for the story records and
+// the story's own rules.
 //
 // Store writes refetch /state (main.js -> update). The board's side of each
 // card (step, blocked, worker session) comes from GET /cards, polled while
@@ -38,6 +39,12 @@ const ICON = {
   right: svg('<path d="m9 6 6 6-6 6"/>'),
   search: svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
   arrow: svg('<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>'),
+  pencil: svg('<path d="M16.5 3.5 20.5 7.5 8 20H4v-4z"/><path d="M4 21h16"/>'),
+  xcircle: svg('<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/>'),
+  expand: svg('<path d="M4 9V4h5M20 15v5h-5M4 4l6 6M20 20l-6-6"/>'),
+  shorten: svg('<path d="M10 4v6H4M14 20v-6h6M3 3l7 7M21 21l-7-7"/>'),
+  send: svg('<path d="M21 3 10 14"/><path d="M21 3 14 21l-4-7-7-4z"/>'),
+  note: svg('<path d="M4 4h16v12H8l-4 4z"/><path d="M8 9h8M8 12h5"/>'),
 };
 
 // Grid cell glyph per status key; "working"/"revising" show a spinner,
@@ -85,7 +92,7 @@ const DRAWER_TABS = [
   { id: "cold", label: "Cold read" },
   { id: "reviews", label: "Reviews" },
   { id: "scenes", label: "Scenes" },
-  { id: "feedback", label: "Feedback" },
+  { id: "review", label: "Your review" },
 ];
 
 function msg(e) {
@@ -140,24 +147,35 @@ function joinLines(lines) {
   return out;
 }
 
-function renderProse(md) {
-  const text = String(md || "")
-    .replace(/\r\n?/g, "\n")
-    .replace(/^(#{1,6}[ \t].*)$/gm, "\n$1\n");
-  const out = [];
-  for (const raw of text.split(/\n[ \t]*\n/)) {
-    const b = raw.replace(/^\n+|\s+$/g, "");
-    if (!b.trim()) continue;
-    const lines = b.split("\n");
-    const hm = lines.length === 1 ? /^(#{1,6})[ \t]+(.+)$/.exec(b.trim()) : null;
-    if (hm) out.push(h(hm[1].length <= 1 ? "h3" : "h4", { class: "sw-prose-h" }, inline(hm[2])));
-    else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(b)) out.push(h("hr"));
-    else if (lines.every((l) => /^\s*>/.test(l))) out.push(h("blockquote", null, joinLines(lines.map((l) => l.replace(/^\s*>\s?/, "")))));
-    else out.push(h("p", null, joinLines(lines)));
-  }
-  return out;
+/// One block of chapter text as DOM, carrying its source line range so a
+/// click or a selection resolves to the lines a review note anchors to.
+function blockEl(b) {
+  const at = { "data-line-start": String(b.start), "data-line-end": String(b.end) };
+  if (b.type === "heading") return h(b.level <= 1 ? "h3" : "h4", { class: "sw-prose-h sw-block", ...at }, inline(b.text));
+  if (b.type === "hr") return h("hr", { class: "sw-block", ...at });
+  if (b.type === "quote") return h("blockquote", { class: "sw-block", ...at }, joinLines(b.lines));
+  return h("p", { class: "sw-block", ...at }, joinLines(b.lines));
 }
 
+function renderProse(md) {
+  return D.proseBlocks(md).map(blockEl);
+}
+
+/// A block's own text, for the quote a click (rather than a selection) puts
+/// on a note — without the margin pin's count.
+function blockText(el) {
+  let out = "";
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === 1 && node.classList.contains("sw-pin")) continue;
+    out += node.nodeType === 1 && node.tagName === "BR" ? "\n" : node.textContent || "";
+  }
+  return out.trim();
+}
+
+function blockOf(node) {
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  return el ? el.closest("[data-line-start]") : null;
+}
 // ── the dashboard ────────────────────────────────────────────────────────
 
 export function mountDashboard(container, opts) {
@@ -190,8 +208,15 @@ export function mountDashboard(container, opts) {
   let unexFilter = "all";
   let notice = null; // {tone, text}
   let confirming = false; // the Approve confirmation is showing
-  const busy = new Set(); // "approve", "export", "retry:<id>", "fb:<n>"
-  const drafts = {}; // chapter -> unsent feedback text
+  const busy = new Set(); // "approve", "export", "retry:<id>", "note", "note:<id>", "decide:<n>"
+  // Owner review (SW-12): the note popover over a passage, the note being
+  // edited, the open "Request changes" form, and which chapter's "approve
+  // with notes not sent" confirmation is showing.
+  let pop = null; // {chapter, start, end, quote, x, y, kind, draft, error}
+  let editing = null; // {chapter, id, draft}
+  let requesting = null; // {chapter, summary, toRules}
+  let confirmCh = null;
+  let dragging = false; // a mouse button is held in the annotatable text (a selection in progress)
   let drawer = null; // {chapter, tab}
   let drawerOpenerFid = null;
   let drawerNotice = null;
@@ -326,16 +351,102 @@ export function mountDashboard(container, opts) {
     );
   }
 
-  function sendFeedback(n) {
-    const text = String(drafts[n] || "").trim();
-    if (!text) return;
+  // ── owner review (SW-12) ───────────────────────────────────────────────────
+
+  /// Open the note popover over a passage (lines start..end of chapter n).
+  function openPop(n, start, end, quote, rect) {
+    const text = String(quote || "").replace(/\s+/g, " ").trim().slice(0, 1000);
+    pop = { chapter: n, start, end, quote: text, x: rect.left, y: rect.bottom + 6, h: rect.height, kind: null, draft: "", error: null };
+    editing = null;
+    focusFid = "pop.verb.0";
+    render();
+  }
+
+  function closePop(back) {
+    if (!pop) return;
+    const start = pop.start;
+    pop = null;
+    if (back) focusFid = `blk.${start}`;
+    render();
+  }
+
+  async function addNote() {
+    if (!pop || busy.has("note")) return;
+    const kind = D.noteKind(pop.kind);
+    const body = String(pop.draft || "").trim();
+    if (kind.needsBody && !body) {
+      pop.error = "Say what should change.";
+      focusFid = "pop.body";
+      render();
+      return;
+    }
+    const p = pop;
+    busy.add("note");
+    p.error = null;
+    render();
+    try {
+      await postJSON(`${P}/review/note`, { chapter: p.chapter, kind: kind.id, start_line: p.start, end_line: p.end, quote: p.quote, body });
+      if (pop === p) pop = null;
+      focusFid = `blk.${p.start}`;
+      await opts.refresh();
+    } catch (e) {
+      if (pop === p) {
+        p.error = msg(e);
+        focusFid = "pop.body";
+      }
+    } finally {
+      busy.delete("note");
+      render();
+    }
+  }
+
+  async function noteCall(key, path, body, after) {
+    if (busy.has(key)) return;
+    busy.add(key);
+    render();
+    try {
+      await postJSON(`${P}${path}`, body);
+      if (after) after();
+      await opts.refresh();
+    } catch (e) {
+      say({ tone: "err", text: msg(e) }, true);
+    } finally {
+      busy.delete(key);
+      render();
+    }
+  }
+
+  function saveEdit() {
+    const e = editing;
+    if (!e || !String(e.draft || "").trim() && D.noteKind(e.kind).needsBody) return;
+    return noteCall(`note:${e.id}`, "/review/note/update", { chapter: e.chapter, id: e.id, body: e.draft }, () => {
+      if (editing === e) editing = null;
+    });
+  }
+
+  function deleteNote(n, id) {
+    if (editing && editing.id === id) editing = null;
+    return noteCall(`note:${id}`, "/review/note/delete", { chapter: n, id });
+  }
+
+  function approveChapter(n) {
+    confirmCh = null;
+    return act(`decide:${n}`, () => postJSON(`${P}/review/decide`, { chapter: n, decision: "approve" }), `Chapter ${n} approved.`, true);
+  }
+
+  function requestChanges(n) {
+    const r = requesting;
+    if (!r || r.chapter !== n) return;
+    const info = D.reviewInfo(state, n, cards);
+    const count = info.notes.length;
+    if (!count && !String(r.summary || "").trim()) return;
     return act(
-      `fb:${n}`,
+      `decide:${n}`,
       async () => {
-        await postJSON(`${P}/pipeline/feedback`, { chapter: n, text });
-        drafts[n] = "";
+        await postJSON(`${P}/review/decide`, { chapter: n, decision: "changes", summary: r.summary || "", add_to_rules: !!r.toRules });
+        if (requesting === r) requesting = null;
       },
-      `Feedback sent. A revision card for chapter ${n} is on the board, and your note was added to the story's rules.`,
+      `Sent ${count ? plural(count, "note") : "your note"} to the writer. The redraft is cold-read again, then comes back to you as round ${info.roundNo + 1}.`,
       true,
     );
   }
@@ -374,11 +485,18 @@ export function mountDashboard(container, opts) {
     setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
 
-  function openChapter(n, which, fromFid, focus) {
+  function openChapter(n, which, fromFid, focus, request) {
     drawerOpenerFid = fromFid || null;
+    if (!drawer || drawer.chapter !== n) {
+      pop = null;
+      editing = null;
+      requesting = null;
+      confirmCh = null;
+    }
     drawer = { chapter: n, tab: which || "text" };
     drawerNotice = null;
     confirming = false;
+    if (request) requesting = requesting && requesting.chapter === n ? requesting : { chapter: n, summary: "", toRules: true };
     focusFid = focus || "drawer.close";
     ensureText(n);
     render();
@@ -388,6 +506,10 @@ export function mountDashboard(container, opts) {
     drawer = null;
     drawerNotice = null;
     confirming = false;
+    pop = null;
+    editing = null;
+    requesting = null;
+    confirmCh = null;
     focusFid = drawerOpenerFid;
     render();
   }
@@ -398,6 +520,11 @@ export function mountDashboard(container, opts) {
   /// <select> has focus (its popup may be open); wait for it to blur.
   function renderSoon() {
     setTimeout(() => {
+      // Rebuilding the DOM mid-drag would drop the owner's half-made selection.
+      if (dragging) {
+        document.addEventListener("mouseup", renderSoon, { once: true });
+        return;
+      }
       const a = document.activeElement;
       if (a && a.tagName === "SELECT" && container.contains(a)) {
         a.addEventListener("blur", renderSoon, { once: true });
@@ -439,8 +566,23 @@ export function mountDashboard(container, opts) {
       const n = container.querySelector(`[data-scroll-key="${attrEscape(k)}"]`);
       if (n) n.scrollLeft = x;
     }
-    if (!fid) return;
+    placePop();
+    // The drawer is modal: if the control that had focus went away (a form
+    // that closed on send), keep focus inside it so Escape and Tab still work.
+    const lost = !document.activeElement || document.activeElement === document.body;
+    const fallback = () => {
+      const body = drawer && document.activeElement === document.body ? container.querySelector(".sw-drawer-body") : null;
+      if (body) body.focus({ preventScroll: true });
+    };
+    if (!fid) {
+      if (lost) fallback();
+      return;
+    }
     const n = container.querySelector(`[data-fid="${attrEscape(fid)}"]`);
+    if (!n) {
+      if (lost) fallback();
+      return;
+    }
     if (!n) return;
     n.focus({ preventScroll: !!keepFid });
     if (sel) {
@@ -640,12 +782,18 @@ export function mountDashboard(container, opts) {
   function approveControls(where) {
     const g = D.gateInfo(state);
     const approving = busy.has("approve");
+    const unsent = g.review.notes.length;
     if (confirming) {
+      const next = g.remaining ? `write the other ${plural(g.remaining, "chapter")} from it` : "start the review passes";
       return [
         h(
           "span",
           { class: "sw-confirm-text" },
-          g.remaining ? `Write the other ${plural(g.remaining, "chapter")} from this pilot?` : "Approve the pilot and start the review passes?",
+          unsent
+            ? `Approve without sending your ${plural(unsent, "note")}, and ${next}?`
+            : g.remaining
+              ? `Write the other ${plural(g.remaining, "chapter")} from this pilot?`
+              : "Approve the pilot and start the review passes?",
         ),
         h(
           "button",
@@ -677,11 +825,13 @@ export function mountDashboard(container, opts) {
           class: "sw-btn",
           type: "button",
           disabled: !g.canApprove || approving,
-          title: g.openPilotRevision
-            ? "A pilot revision is still open — approve once it's in."
-            : !g.coldClear
-              ? "Opens once every cold-read item on the pilot is fixed."
-              : null,
+          title: g.redraft
+            ? "The pilot is being redrafted from your notes — approve the new draft once it's back."
+            : g.openPilotRevision
+              ? "A pilot revision is still open — approve once it's in."
+              : !g.coldClear
+                ? "Opens once every cold-read item on the pilot is fixed."
+                : null,
           dataset: { fid: `${where}.approve` },
           onclick: () => {
             confirming = true;
@@ -711,17 +861,30 @@ export function mountDashboard(container, opts) {
     return h("span", { class: `sw-gate-cold ${p.open ? "open" : "clear"}` }, icon(p.open ? "alert" : "check"), text);
   }
 
+  /// "Round 2 · 3 notes not sent yet · 1 earlier round" under the gate text.
+  function roundLine(r) {
+    if (!r.rounds.length) return null;
+    const earlier = r.rounds.filter((x) => x.round < r.roundNo).length;
+    const parts = [`Round ${r.roundNo}`, r.notes.length ? `${plural(r.notes.length, "note")} not sent yet` : "no notes yet"];
+    if (earlier) parts.push(`${plural(earlier, "earlier round")} in Your review`);
+    return h("span", { class: "sw-gate-round" }, icon("note"), parts.join(" · "));
+  }
+
   function buildGate() {
     const g = D.gateInfo(state);
     if (g.notReady) return buildGateNotReady(g);
     if (!g.active) return null;
+    if (g.redraft) return buildGateRedraft();
+    const r = g.review;
+    const unsent = r.notes.length;
     const text = g.openPilotRevision
-      ? [h("strong", null, "The pilot is being revised from your feedback. "), "Read the new version once it's in, then approve it or send more feedback."]
+      ? [h("strong", null, "The pilot is being revised from your feedback. "), "Read the new version once it's in, then approve it or request more changes."]
       : [
           h("strong", null, "Your pilot chapter is ready. "),
+          "Read it and leave notes on any passage. ",
           g.remaining
-            ? `Read it, then approve it to write the other ${plural(g.remaining, "chapter")} in parallel — or send feedback for a revision first.`
-            : "Read it, then approve it to start the review passes — or send feedback for a revision first.",
+            ? `Approve it to write the other ${plural(g.remaining, "chapter")} in parallel — or request changes for a redraft first.`
+            : "Approve it to start the review passes — or request changes for a redraft first.",
         ];
     return h(
       "section",
@@ -730,21 +893,81 @@ export function mountDashboard(container, opts) {
       h(
         "div",
         { class: "sw-gate-text" },
-        h("span", { class: "sw-kicker" }, g.openPilotRevision ? "Your review · revision running" : "Waiting on you"),
+        h("span", { class: "sw-kicker" }, g.openPilotRevision ? "Your review · revision running" : `Waiting on you · round ${r.roundNo}`),
         h("p", null, text),
-        gateColdLine(g),
+        h("div", { class: "sw-gate-lines" }, gateColdLine(g), roundLine(r)),
+      ),
+      h(
+        "div",
+        { class: "sw-gate-actions" },
+        h(
+          "button",
+          { class: "sw-btn secondary", type: "button", dataset: { fid: "gate.read" }, onclick: () => openChapter(1, "text", "gate.read") },
+          icon("book"),
+          unsent ? "Review pilot" : "Read & review pilot",
+        ),
+        g.openPilotRevision
+          ? null
+          : h(
+              "button",
+              {
+                class: "sw-btn secondary",
+                type: "button",
+                dataset: { fid: "gate.changes" },
+                onclick: () => openChapter(1, "text", "gate.changes", "req.summary", true),
+              },
+              icon("send"),
+              unsent ? `Request changes · ${unsent}` : "Request changes…",
+            ),
+        approveControls("gate"),
+      ),
+    );
+  }
+
+  /// The owner requested changes on the pilot: the writer's revision card,
+  /// then the redraft's fresh cold read, run before it comes back as the
+  /// next round. Readable, not approvable.
+  function buildGateRedraft() {
+    // gateInfo has no live card data; the phase needs it for the session.
+    const r = D.reviewInfo(state, 1, cards);
+    const ph = r.phase;
+    const failed = ph.key === "failed";
+    const sent = r.pending.notes.length;
+    const what = [sent ? plural(sent, "note") : null, r.pending.summary ? "overall note" : null].filter(Boolean).join(" and ") || "notes";
+    return h(
+      "section",
+      { class: `sw-gate redraft${failed ? " failed" : ""}`, "aria-label": "Your review — redraft running" },
+      h("span", { class: "sw-gate-icon", html: failed ? ICON.alert : ICON.clock }),
+      h(
+        "div",
+        { class: "sw-gate-text" },
+        h("span", { class: "sw-kicker" }, `Your review · round ${r.pending.round} sent`),
+        h(
+          "p",
+          null,
+          h("strong", null, "The pilot is being redrafted from your review. "),
+          `The writer works through your ${what}, then a fresh reader cold-reads the redraft. It comes back here as round ${r.pending.round + 1}.`,
+        ),
+        h(
+          "span",
+          { class: `sw-gate-phase${failed ? " failed" : ""}` },
+          failed ? icon("alert") : h("span", { class: "sw-spinner", "aria-hidden": "true" }),
+          `Now: ${ph.label}`,
+          ph.status && ph.status.key !== "failed" ? statusBadge(ph.status) : null,
+        ),
       ),
       h(
         "div",
         { class: "sw-gate-actions" },
         h("button", { class: "sw-btn secondary", type: "button", dataset: { fid: "gate.read" }, onclick: () => openChapter(1, "text", "gate.read") }, icon("book"), "Read pilot"),
+        h("button", { class: "sw-btn secondary", type: "button", dataset: { fid: "gate.review" }, onclick: () => openChapter(1, "review", "gate.review") }, icon("note"), "Your review"),
+        failed && ph.unit ? retryBtn(ph.unit) : sessionBtn(ph.status && ph.status.sessionId, "Open session"),
         h(
           "button",
-          { class: "sw-btn secondary", type: "button", dataset: { fid: "gate.feedback" }, onclick: () => openChapter(1, "feedback", "gate.feedback", "fb.1") },
-          icon("chat"),
-          "Send feedback",
+          { class: "sw-btn", type: "button", disabled: true, title: "Opens once the redraft is back as the next round.", dataset: { fid: "gate.approve" } },
+          icon("lock"),
+          "Approve pilot…",
         ),
-        approveControls("gate"),
       ),
     );
   }
@@ -853,8 +1076,7 @@ export function mountDashboard(container, opts) {
     const units = Object.values(D.engineOf(state).units).filter((u) => u.kind !== "generate");
     const open = units.filter((u) => u.status === "open").length;
     const working = cards ? units.filter((u) => D.unitStatus(u, cards).key === "working").length : null;
-    const ownerNotes = ((state && state.feedback) || []).filter((f) => f.source === "owner").length;
-    const openFb = units.filter((u) => D.isFeedbackRevision(u) && u.status === "open").length;
+    const rv = D.reviewTotals(state);
     const tile = (label, value, sub, extra) =>
       h("div", { class: "sw-stat" }, h("span", { class: "sw-stat-label" }, label), h("span", { class: "sw-stat-value" }, value), extra || null, sub ? h("span", { class: "sw-stat-sub" }, sub) : null);
     return h(
@@ -864,7 +1086,19 @@ export function mountDashboard(container, opts) {
       tile("Chapters written", h("span", null, String(o.written), h("small", null, ` / ${o.chapters}`)), null, meter(o.written, o.chapters, "Chapters written")),
       tile("Review passes", h("span", null, String(o.passes), h("small", null, ` / ${o.passesTotal}`)), null, meter(o.passes, o.passesTotal, "Review passes done")),
       tile("Working now", working === null ? "—" : String(working), `${plural(open, "card")} open`),
-      tile("Your feedback", String(ownerNotes), openFb ? `${plural(openFb, "revision")} open` : ownerNotes ? "All revisions in" : "Nothing sent yet"),
+      tile(
+        "Your review",
+        h("span", null, String(rv.sent), h("small", null, " notes sent")),
+        rv.redrafting
+          ? `${plural(rv.redrafting, "redraft")} running`
+          : rv.unsent
+            ? `${plural(rv.unsent, "note")} not sent yet`
+            : rv.sent
+              ? "All redrafts in"
+              : rv.approved
+                ? `${plural(rv.approved, "draft")} approved`
+                : "Nothing sent yet",
+      ),
     );
   }
 
@@ -927,7 +1161,7 @@ export function mountDashboard(container, opts) {
     const g = D.gateInfo(state);
     let actions = null;
     if (s.id === "pilot_review" && g.active) {
-      actions = h("div", { class: "sw-stage-actions" }, h("button", { class: "sw-btn secondary", type: "button", onclick: () => openChapter(1, "text") }, icon("book"), "Read pilot"));
+      actions = h("div", { class: "sw-stage-actions" }, h("button", { class: "sw-btn secondary", type: "button", onclick: () => openChapter(1, "text") }, icon("book"), "Review pilot"));
     } else if ((s.id === "cold_read" || s.id === "cold_fix") && g.cold.doc) {
       actions = h(
         "div",
@@ -959,7 +1193,7 @@ export function mountDashboard(container, opts) {
   function unitsEmpty(s) {
     const engine = D.engineOf(state);
     const prev = D.STAGES[D.STAGES.findIndex((x) => x.id === s.id) - 1];
-    if (s.id === "pilot_review") return "No revisions yet. Feedback you send on the pilot or any chapter shows up here as a revision card.";
+    if (s.id === "pilot_review") return "No revisions yet. When you request changes on the pilot or any chapter, the revision card shows up here.";
     if (s.id === "final") return engine.finished ? null : "Unlocks once every chapter has been through every review pass.";
     if ((s.id === "cold_read" || s.id === "cold_fix") && s.status === "done" && s.sub === "Not run")
       return "Not run for this story — its pilot reached your review before cold reads were part of the pipeline.";
@@ -1077,6 +1311,19 @@ export function mountDashboard(container, opts) {
     );
   }
 
+  /// The grid's notes column: where your review of the chapter stands.
+  function reviewChip(r) {
+    const v = r.review;
+    if (v.pending) {
+      return v.phase && v.phase.key === "failed" ? badge("err", "Redraft stopped") : badge("busy", `Redrafting · round ${v.pending.round}`, true);
+    }
+    if (v.open && v.notes.length) {
+      return h("span", { class: "sw-note-chip", title: `Round ${v.open.round}: ${plural(v.notes.length, "note")} not sent yet` }, icon("note"), String(v.notes.length));
+    }
+    if (v.approved) return h("span", { class: "sw-note-chip ok", title: `You approved this draft (round ${v.last.round})` }, icon("check"), "Approved");
+    if (v.rounds.length) return h("span", { class: "sw-note-chip", title: plural(v.rounds.length, "review round") }, icon("note"), `R${v.roundNo}`);
+    return null;
+  }
   function buildChapters() {
     const rows = D.chapterRows(state, cards);
     const legend = h(
@@ -1090,7 +1337,7 @@ export function mountDashboard(container, opts) {
       panelHead(
         "sw-h-chapters",
         "Chapters",
-        "Draft, cold read and review progress per chapter. Pick a chapter to read it, see its cold read and reviews, or send feedback.",
+        "Draft, cold read and review progress per chapter. Pick a chapter to read it, see its cold read and reviews, or leave your notes on it.",
       ),
       legend,
       h(
@@ -1145,9 +1392,7 @@ export function mountDashboard(container, opts) {
                   "td",
                   { class: "sw-cgrid-notes" },
                   r.revising ? badge("busy", "Revising", true) : null,
-                  r.feedback
-                    ? h("span", { class: "sw-note-chip", title: `${plural(r.feedback, "feedback note")} from you` }, icon("chat"), String(r.feedback))
-                    : null,
+                  reviewChip(r),
                 ),
               ),
             ),
@@ -2191,7 +2436,7 @@ export function mountDashboard(container, opts) {
         "div",
         { class: "sw-fb-head" },
         badge(f.source === "owner" ? "busy" : "warn", f.source === "owner" ? "You" : "Review"),
-        f.chapter ? h("button", { class: "sw-linkbtn", type: "button", onclick: () => openChapter(f.chapter, "feedback") }, `Chapter ${f.chapter}`) : null,
+        f.chapter ? h("button", { class: "sw-linkbtn", type: "button", onclick: () => openChapter(f.chapter, "review") }, `Chapter ${f.chapter}`) : null,
         h("span", { class: "sw-muted" }, fmtDate(f.at)),
         f.appended_to_rules ? h("span", { class: "sw-tag" }, icon("check"), "Added to rules") : null,
         h("span", { class: "sw-spacer" }),
@@ -2214,14 +2459,23 @@ export function mountDashboard(container, opts) {
     const words = t && t.doc ? D.wordCount(t.doc.markdown) : null;
     const reviews = D.PASSES.filter((p) => D.reviewOf(state, n, p.id)).length;
     const scenes = ((state.records && state.records.scene_sheets) || []).filter((s) => s.chapter === n);
-    const fbCount = ((state && state.feedback) || []).filter((f) => f.chapter === n).length;
+    const rinfo = D.reviewInfo(state, n, cards);
     const cold = D.coldReadOf(state, n);
-    const counts = { cold: cold ? (cold.items || []).length : undefined, reviews, scenes: scenes.length, feedback: fbCount };
+    const counts = { cold: cold ? (cold.items || []).length : undefined, reviews, scenes: scenes.length, review: rinfo.notes.length || undefined };
     const go = (to) => () => openChapter(to, drawer.tab, drawerOpenerFid, `drawer.go.${to > n ? "next" : "prev"}`);
     const trap = (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        closeDrawer();
+        if (pop) closePop(true);
+        else if (editing) {
+          focusFid = `note.edit.${editing.id}`;
+          editing = null;
+          render();
+        } else if (requesting) {
+          requesting = null;
+          focusFid = "req.open";
+          render();
+        } else closeDrawer();
         return;
       }
       if (e.key !== "Tab") return;
@@ -2257,6 +2511,8 @@ export function mountDashboard(container, opts) {
               sum ? h("span", null, `Revision ${sum.revision}`) : null,
               words !== null ? h("span", null, `${words.toLocaleString()} words`) : null,
               row.revising ? badge("busy", "Revision in progress", true) : null,
+              rinfo.pending ? badge("warn", `Round ${rinfo.pending.round} sent · redrafting`, true) : null,
+              rinfo.approved ? badge("ok", "Approved by you") : null,
               sessionBtn(row.draft.sessionId, "Writer's session"),
             ),
           ),
@@ -2292,7 +2548,8 @@ export function mountDashboard(container, opts) {
             : null,
           drawerPanel(n, sum, t, row, scenes),
         ),
-        h("footer", { class: "sw-drawer-foot" }, feedbackForm(n)),
+        h("footer", { class: "sw-drawer-foot" }, reviewBar(n)),
+        pop && pop.chapter === n ? buildPop() : null,
       ),
     ];
   }
@@ -2305,8 +2562,8 @@ export function mountDashboard(container, opts) {
         return reviewsTab(n, row);
       case "scenes":
         return scenesTab(scenes);
-      case "feedback":
-        return feedbackTab(n);
+      case "review":
+        return reviewTab(n);
       default:
         return textTab(n, sum, t, row);
     }
@@ -2336,10 +2593,90 @@ export function mountDashboard(container, opts) {
     }
     if (!t.doc) return empty("Not written yet.");
     const recap = t.doc.recap;
+    const info = D.reviewInfo(state, n, cards);
+    const canNote = info.canReview;
+    const blocks = D.proseBlocks(t.doc.markdown);
+    const placed = D.placeNotes(blocks, canNote ? info.notes : []);
+    const picked = pop && pop.chapter === n ? pop : null;
     return [
+      reviewStrip(n, info),
       recap ? h("div", { class: "sw-recap-box" }, h("span", { class: "sw-setup-k" }, "Recap"), h("p", null, recap)) : null,
-      h("article", { class: "sw-prose", "aria-label": `Chapter ${n} text` }, renderProse(t.doc.markdown)),
+      h(
+        "article",
+        {
+          class: `sw-prose${canNote ? " annotatable" : ""}`,
+          "aria-label": `Chapter ${n} text`,
+          onmouseup: canNote ? (e) => onProseUp(e, n) : null,
+          onkeydown: canNote ? (e) => onProseKey(e, n) : null,
+        },
+        blocks.map((b, i) => {
+          const el = blockEl(b);
+          const notes = placed[i];
+          if (!canNote) return el;
+          el.tabIndex = 0;
+          el.dataset.fid = `blk.${b.start}`;
+          if (notes.length) {
+            el.classList.add("noted");
+            el.appendChild(h("span", { class: "sw-pin", "aria-hidden": "true" }, String(notes.length)));
+          }
+          if (picked && b.start <= picked.end && b.end >= picked.start) el.classList.add("sel");
+          if (!notes.length) return el;
+          const whole = b.lines.join(" ");
+          return [el, h("ul", { class: "sw-inline-notes", "aria-label": `Your notes on ${D.lineLabel({ start_line: b.start, end_line: b.end })}` }, notes.map((x) => noteItem(n, x, true, !sameText(x.quote, whole))))];
+        }),
+      ),
     ];
+  }
+
+  /// Whether a note's quote is just the whole block (then the block itself,
+  /// right above, says it — no need to repeat it).
+  function sameText(a, b) {
+    const norm = (s) => String(s || "").replace(/[*_`>#]/g, "").replace(/\s+/g, " ").trim();
+    return norm(a) === norm(b);
+  }
+
+  /// The strip above the chapter text: how to leave notes in this round,
+  /// that a redraft is running, or why the text can't be reviewed yet.
+  function reviewStrip(n, info) {
+    if (info.pending) {
+      return h(
+        "div",
+        { class: "sw-review-hint redraft" },
+        icon("clock"),
+        h(
+          "span",
+          null,
+          h("strong", null, `Round ${info.pending.round} sent — being redrafted. `),
+          `You'll review the new draft as round ${info.pending.round + 1} once its cold read is done. `,
+          h(
+            "button",
+            {
+              class: "sw-linkbtn",
+              type: "button",
+              onclick: () => {
+                drawer = { ...drawer, tab: "review" };
+                render();
+              },
+            },
+            "See your notes",
+          ),
+        ),
+      );
+    }
+    if (!info.canReview) return info.why ? h("div", { class: "sw-review-hint closed" }, icon("info"), h("span", null, info.why)) : null;
+    const count = info.notes.length;
+    return h(
+      "div",
+      { class: "sw-review-hint" },
+      icon("note"),
+      h(
+        "span",
+        null,
+        h("strong", null, `Round ${info.roundNo} · draft revision ${info.revision}. `),
+        "Select a passage — or click a paragraph, or press Enter on it — to leave a note.",
+        count ? ` ${plural(count, "note")} so far; they go to the writer when you request changes.` : "",
+      ),
+    );
   }
 
   function reviewsTab(n, row) {
@@ -2433,71 +2770,524 @@ export function mountDashboard(container, opts) {
     );
   }
 
-  function feedbackTab(n) {
-    const list = D.feedbackRows(state, cards).filter((f) => f.chapter === n);
-    if (!list.length) return empty(n === 1 ? "No feedback on the pilot yet." : `No feedback on chapter ${n} yet.`);
-    return h("ul", { class: "sw-fb-list" }, list.map(feedbackItem));
+  // ── owner review: notes, rounds, decisions (SW-12) ─────────────────────
+
+  /// The block just before `el` in the text (a selection that ends at the
+  /// very start of a block didn't actually take any of it).
+  function prevBlock(el) {
+    let x = el.previousElementSibling;
+    while (x && !x.hasAttribute("data-line-start")) x = x.previousElementSibling;
+    return x;
   }
 
-  function feedbackForm(n) {
-    const g = D.gateInfo(state);
-    const allowed = D.canGiveFeedback(state, n);
-    const gate = n === 1 && g.active ? h("div", { class: "sw-drawer-approve" }, approveControls("drawer")) : null;
-    if (!allowed) {
-      const why = g.notReady
-        ? "Feedback and approval open once the pilot's cold read is done and every item it found is fixed."
-        : D.stageIndex(D.engineOf(state).stage) < D.stageIndex("pilot_review")
-          ? "You can send feedback once the pilot chapter is written."
-          : "Feedback opens once this chapter is written.";
-      return [h("p", { class: "sw-muted sw-fb-closed" }, why), gate];
+  /// A selection inside the text quotes exactly what was highlighted (and
+  /// spans every block it touches); a plain click takes the whole block.
+  function onProseUp(e, n) {
+    if (e.button !== 0) return;
+    const root = e.currentTarget;
+    if (e.target.closest(".sw-inline-notes, button, a, textarea, input")) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      const a = blockOf(range.startContainer);
+      let b = blockOf(range.endContainer);
+      if (b && b !== a && range.endOffset === 0) b = prevBlock(b) || b;
+      const text = sel.toString().trim();
+      if (a && b && root.contains(a) && root.contains(b) && text) {
+        const start = Math.min(Number(a.dataset.lineStart), Number(b.dataset.lineStart));
+        const end = Math.max(Number(a.dataset.lineEnd), Number(b.dataset.lineEnd));
+        openPop(n, start, end, text, range.getBoundingClientRect());
+        return;
+      }
     }
-    const sending = busy.has(`fb:${n}`);
-    const text = drafts[n] || "";
-    const submit = (e) => {
+    const block = blockOf(e.target);
+    if (!block || !root.contains(block)) return;
+    openPop(n, Number(block.dataset.lineStart), Number(block.dataset.lineEnd), blockText(block), block.getBoundingClientRect());
+  }
+
+  function onProseKey(e, n) {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const block = e.target;
+    if (!block.hasAttribute || !block.hasAttribute("data-line-start")) return;
+    e.preventDefault();
+    openPop(n, Number(block.dataset.lineStart), Number(block.dataset.lineEnd), blockText(block), block.getBoundingClientRect());
+  }
+
+  const KIND_ICON = { comment: "chat", suggest: "pencil", wrong: "xcircle", expand: "expand", shorten: "shorten" };
+
+  /// The popover over a picked passage: the five kinds of note PeckBoard's
+  /// Review page offers, then the note's text. A bottom sheet on phones.
+  function buildPop() {
+    const p = pop;
+    const kind = p.kind ? D.noteKind(p.kind) : null;
+    const saving = busy.has("note");
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
       e.preventDefault();
-      sendFeedback(n);
+      e.stopPropagation();
+      closePop(true);
     };
-    return [
+    const back = () => {
+      p.kind = null;
+      p.error = null;
+      focusFid = "pop.verb.0";
+      render();
+    };
+    return h(
+      "div",
+      { class: "sw-pop", role: "dialog", "aria-label": "Note on this passage", style: { left: `${p.x}px`, top: `${p.y}px` }, onkeydown: onKey },
       h(
+        "div",
+        { class: "sw-pop-head" },
+        h("span", { class: "sw-kicker" }, p.end > p.start ? `Lines ${p.start}–${p.end}` : `Line ${p.start}`),
+        h("button", { class: "sw-icon-btn", type: "button", "aria-label": "Close", html: ICON.x, dataset: { fid: "pop.close" }, onclick: () => closePop(true) }),
+      ),
+      p.quote ? h("p", { class: "sw-pop-quote" }, p.quote) : null,
+      !kind
+        ? h(
+            "div",
+            { class: "sw-pop-verbs", role: "group", "aria-label": "Kind of note" },
+            D.NOTE_KINDS.map((k, i) =>
+              h(
+                "button",
+                {
+                  class: "sw-pop-verb",
+                  type: "button",
+                  dataset: { fid: `pop.verb.${i}` },
+                  onclick: () => {
+                    p.kind = k.id;
+                    p.error = null;
+                    focusFid = "pop.body";
+                    render();
+                  },
+                },
+                icon(KIND_ICON[k.id]),
+                k.label,
+              ),
+            ),
+          )
+        : h(
+            "form",
+            {
+              class: "sw-pop-editor",
+              onsubmit: (e) => {
+                e.preventDefault();
+                addNote();
+              },
+            },
+            h("label", { class: "sw-label", for: "sw-pop-body" }, icon(KIND_ICON[kind.id]), kind.label, kind.needsBody ? null : h("span", { class: "sw-hint" }, "text optional")),
+            h("textarea", {
+              id: "sw-pop-body",
+              class: "sw-textarea sm",
+              rows: 3,
+              value: p.draft,
+              disabled: saving,
+              placeholder: kind.placeholder,
+              dataset: { fid: "pop.body" },
+              oninput: (e) => {
+                p.draft = e.target.value;
+              },
+              onkeydown: (e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  addNote();
+                }
+              },
+            }),
+            p.error ? h("p", { class: "sw-error sw-pop-error", role: "alert" }, p.error) : null,
+            h(
+              "div",
+              { class: "sw-pop-actions" },
+              h("button", { class: "sw-btn secondary sm", type: "button", disabled: saving, onclick: back }, "Back"),
+              h("button", { class: "sw-btn sm", type: "submit", disabled: saving, dataset: { fid: "pop.add" } }, saving ? h("span", { class: "sw-spinner" }) : icon("check"), "Add note"),
+            ),
+          ),
+    );
+  }
+
+  /// Keep the popover on screen: flip it above the passage when there's no
+  /// room below, clamp it to the window. (Phones get a bottom sheet.)
+  function placePop() {
+    const el = container.querySelector(".sw-pop");
+    if (!el || !pop) return;
+    if (window.matchMedia && window.matchMedia("(max-width: 640px)").matches) return;
+    const r = el.getBoundingClientRect();
+    const M = 8;
+    let left = Math.min(pop.x, window.innerWidth - r.width - M);
+    let top = pop.y;
+    if (top + r.height > window.innerHeight - M) top = pop.y - 12 - r.height - (pop.h || 0);
+    left = Math.max(M, left);
+    top = Math.max(M, Math.min(top, window.innerHeight - r.height - M));
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  }
+
+  function resolutionBox(res) {
+    const info = D.RESOLUTIONS[res.action] || { label: res.action, tone: "" };
+    return h("div", { class: `sw-res ${res.action}` }, h("span", { class: "sw-res-k" }, `Writer: ${info.label.toLowerCase()}`), h("p", null, res.how));
+  }
+
+  /// One note: its kind, lines, quote and text; Edit/Delete while its round
+  /// is still open; the writer's resolution once the redraft is in.
+  function noteItem(n, note, editable, showQuote) {
+    const k = D.noteKind(note.kind);
+    const sum = D.chapterSummary(state, n);
+    const stale = sum && note.revision !== sum.revision;
+    const isEditing = editable && editing && editing.chapter === n && editing.id === note.id;
+    const key = `note:${note.id}`;
+    const working = busy.has(key);
+    let body;
+    if (isEditing) {
+      const save = (e) => {
+        e.preventDefault();
+        saveEdit();
+      };
+      body = h(
         "form",
-        { class: "sw-fb", onsubmit: submit },
-        h(
-          "label",
-          { class: "sw-label", for: `sw-fb-${n}` },
-          n === 1 ? "Feedback on the pilot" : `Feedback on chapter ${n}`,
-          h("span", { class: "sw-hint" }, "Becomes a revision card and is added to the story's rules"),
-        ),
+        { class: "sw-note-edit", onsubmit: save },
         h("textarea", {
-          id: `sw-fb-${n}`,
           class: "sw-textarea sm",
           rows: 3,
-          value: text,
-          disabled: sending,
-          placeholder: "What should change? Be specific — e.g. “Mara wouldn't forgive him this fast; keep her cold until the end of the chapter.”",
-          dataset: { fid: `fb.${n}` },
+          value: editing.draft,
+          disabled: working,
+          "aria-label": `Edit note ${note.id}`,
+          placeholder: k.placeholder,
+          dataset: { fid: `note.edit.body.${note.id}` },
           oninput: (e) => {
-            drafts[n] = e.target.value;
-            const b = container.querySelector(`[data-fid="fb.send.${n}"]`);
-            if (b) b.disabled = !e.target.value.trim();
+            editing.draft = e.target.value;
           },
           onkeydown: (e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(e);
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save(e);
           },
         }),
         h(
           "div",
-          { class: "sw-fb-actions" },
-          gate,
-          h("span", { class: "sw-spacer" }),
+          { class: "sw-note-actions" },
           h(
             "button",
-            { class: "sw-btn", type: "submit", disabled: sending || !text.trim(), dataset: { fid: `fb.send.${n}` } },
-            sending ? h("span", { class: "sw-spinner" }) : icon("chat"),
-            "Send feedback",
+            {
+              class: "sw-btn secondary sm",
+              type: "button",
+              disabled: working,
+              onclick: () => {
+                editing = null;
+                focusFid = `note.edit.${note.id}`;
+                render();
+              },
+            },
+            "Cancel",
           ),
+          h("button", { class: "sw-btn sm", type: "submit", disabled: working }, working ? h("span", { class: "sw-spinner" }) : icon("check"), "Save"),
+        ),
+      );
+    } else {
+      body = note.body
+        ? h("p", { class: "sw-note-body" }, note.body)
+        : h("p", { class: "sw-note-body sw-muted" }, note.kind === "shorten" ? "Shorten this passage." : note.kind === "expand" ? "Expand this passage." : "(no text)");
+    }
+    return h(
+      "li",
+      { class: `sw-note k-${note.kind}${note.resolution ? ` res-${note.resolution.action}` : ""}`, dataset: { noteId: note.id } },
+      h(
+        "div",
+        { class: "sw-note-head" },
+        h("span", { class: "sw-note-kind" }, icon(KIND_ICON[note.kind] || "chat"), k.label),
+        h("span", { class: "sw-note-lines" }, `${note.id} · ${D.lineLabel(note)}`),
+        stale ? h("span", { class: "sw-muted", title: `Written on draft revision ${note.revision}` }, `· revision ${note.revision}`) : null,
+        h("span", { class: "sw-spacer" }),
+        editable && !isEditing
+          ? [
+              h(
+                "button",
+                {
+                  class: "sw-btn ghost sm",
+                  type: "button",
+                  disabled: working,
+                  dataset: { fid: `note.edit.${note.id}` },
+                  onclick: () => {
+                    editing = { chapter: n, id: note.id, kind: note.kind, draft: note.body };
+                    pop = null;
+                    focusFid = `note.edit.body.${note.id}`;
+                    render();
+                  },
+                },
+                "Edit",
+              ),
+              h(
+                "button",
+                { class: "sw-btn danger-ghost sm", type: "button", disabled: working, dataset: { fid: `note.del.${note.id}` }, onclick: () => deleteNote(n, note.id) },
+                working ? h("span", { class: "sw-spinner" }) : null,
+                "Delete",
+              ),
+            ]
+          : null,
+      ),
+      showQuote && note.quote ? h("blockquote", { class: "sw-note-quote" }, note.quote) : null,
+      body,
+      note.resolution ? resolutionBox(note.resolution) : null,
+    );
+  }
+
+  /// "Your review": every round of this chapter, newest first — its draft
+  /// revision, notes, status, and how the writer handled each note.
+  function reviewTab(n) {
+    const info = D.reviewInfo(state, n, cards);
+    const rows = D.roundRows(state, n, cards);
+    if (!rows.length) {
+      const go = info.canReview
+        ? h(
+            "button",
+            {
+              class: "sw-btn secondary sm",
+              type: "button",
+              onclick: () => {
+                drawer = { ...drawer, tab: "text" };
+                render();
+              },
+            },
+            icon("book"),
+            "Go to the text",
+          )
+        : null;
+      return empty(info.canReview ? "No notes yet. Open the text, then select a passage — or click a paragraph — to leave your first note." : info.why || "Nothing to review yet.", go);
+    }
+    return h("ol", { class: "sw-round-list" }, rows.map((r) => roundCard(n, r, info)));
+  }
+
+  function roundCard(n, r, info) {
+    const open = r.status === "open";
+    const pending = r.status === "changes_requested";
+    const res = [r.fixed && `${r.fixed} fixed`, r.answered && `${r.answered} answered`, r.declined && `${r.declined} declined`].filter(Boolean).join(" · ");
+    let sum;
+    if (open) sum = r.notes.length ? `${plural(r.notes.length, "note")} not sent yet — they go to the writer when you request changes.` : "No notes yet.";
+    else if (r.status === "approved") sum = r.notes.length ? `Approved with ${plural(r.notes.length, "note")} not sent.` : "You approved this draft.";
+    else sum = `${r.notes.length ? `${plural(r.notes.length, "note")} sent` : "Overall note sent"}${res ? ` · ${res}` : r.unresolved ? " · waiting for the writer" : ""}.`;
+    return h(
+      "li",
+      { class: `sw-round-card ${r.status}` },
+      h(
+        "div",
+        { class: "sw-round-card-head" },
+        h("strong", null, `Round ${r.round}`),
+        badge(r.statusInfo.tone, r.statusInfo.label),
+        h("span", { class: "sw-muted" }, `Draft revision ${r.draftRevision}`),
+        r.revised_revision ? h("span", { class: "sw-muted" }, `→ redraft: revision ${r.revised_revision}`) : null,
+        h("span", { class: "sw-spacer" }),
+        h("span", { class: "sw-muted" }, fmtDate(r.decided_at || r.opened_at)),
+      ),
+      h("p", { class: "sw-round-sum" }, sum),
+      pending && info.phase
+        ? h(
+            "div",
+            { class: `sw-round-unit${info.phase.key === "failed" ? " failed" : ""}` },
+            info.phase.key === "failed" ? icon("alert") : h("span", { class: "sw-spinner", "aria-hidden": "true" }),
+            h("span", null, `Now: ${info.phase.label}`),
+            h("span", { class: "sw-spacer" }),
+            info.phase.key === "failed" && info.phase.unit ? retryBtn(info.phase.unit) : sessionBtn(info.phase.status && info.phase.status.sessionId, "Open session"),
+          )
+        : null,
+      r.notes.length ? h("ul", { class: "sw-note-list" }, r.notes.map((note) => noteItem(n, note, open, true))) : null,
+      r.summary
+        ? h(
+            "div",
+            { class: "sw-round-overall" },
+            h("span", { class: "sw-setup-k" }, "Overall note"),
+            h("p", null, r.summary),
+            r.summary_to_rules ? h("span", { class: "sw-tag" }, icon("check"), "Added to the story's rules") : null,
+          )
+        : null,
+    );
+  }
+
+  /// The drawer footer: this round's note count with Request changes and
+  /// Approve (the pilot gate's own approval at the gate); the redraft's
+  /// progress while one runs; why not, when the chapter isn't reviewable.
+  function reviewBar(n) {
+    const info = D.reviewInfo(state, n, cards);
+    const g = D.gateInfo(state);
+    const gate = n === 1 && g.active;
+    if (info.pending) {
+      const ph = info.phase;
+      const failed = ph.key === "failed";
+      return h(
+        "div",
+        { class: "sw-review-bar" },
+        h(
+          "span",
+          { class: `sw-review-status${failed ? " failed" : ""}` },
+          failed ? icon("alert") : h("span", { class: "sw-spinner", "aria-hidden": "true" }),
+          h("span", null, h("strong", null, `Round ${info.pending.round} sent. `), `${ph.label}.`),
+        ),
+        h("span", { class: "sw-spacer" }),
+        failed && ph.unit ? retryBtn(ph.unit) : sessionBtn(ph.status && ph.status.sessionId, "Open session"),
+        gate ? approveControls("drawer") : null,
+      );
+    }
+    if (!info.canReview) {
+      return [h("p", { class: "sw-muted sw-fb-closed" }, info.why), gate ? h("div", { class: "sw-drawer-approve" }, approveControls("drawer")) : null];
+    }
+    if (requesting && requesting.chapter === n) return requestForm(n, info);
+    const count = info.notes.length;
+    return h(
+      "div",
+      { class: "sw-review-bar" },
+      h(
+        "span",
+        { class: "sw-review-count" },
+        icon("note"),
+        h("span", null, h("strong", null, `Round ${info.roundNo}`), ` · ${count ? `${plural(count, "note")} not sent yet` : "no notes yet"}`),
+      ),
+      h("span", { class: "sw-spacer" }),
+      gate && g.openPilotRevision
+        ? null
+        : h(
+            "button",
+            {
+              class: "sw-btn secondary",
+              type: "button",
+              dataset: { fid: "req.open" },
+              onclick: () => {
+                requesting = { chapter: n, summary: "", toRules: true };
+                confirming = false;
+                confirmCh = null;
+                focusFid = "req.summary";
+                render();
+              },
+            },
+            icon("send"),
+            count ? `Request changes · ${count}` : "Request changes…",
+          ),
+      gate ? approveControls("drawer") : approveChapterControls(n, info),
+    );
+  }
+
+  function approveChapterControls(n, info) {
+    const key = `decide:${n}`;
+    const count = info.notes.length;
+    if (info.approved && !count) return badge("ok", `Approved · revision ${info.revision}`);
+    if (confirmCh === n) {
+      return [
+        h("span", { class: "sw-confirm-text" }, `Approve without sending your ${plural(count, "note")}?`),
+        h("button", { class: "sw-btn", type: "button", disabled: busy.has(key), dataset: { fid: "ch.approve.yes" }, onclick: () => approveChapter(n) }, busy.has(key) ? h("span", { class: "sw-spinner" }) : icon("check"), "Approve"),
+        h(
+          "button",
+          {
+            class: "sw-btn secondary",
+            type: "button",
+            dataset: { fid: "ch.approve.no" },
+            onclick: () => {
+              confirmCh = null;
+              focusFid = "ch.approve";
+              render();
+            },
+          },
+          "Cancel",
+        ),
+      ];
+    }
+    return h(
+      "button",
+      {
+        class: "sw-btn",
+        type: "button",
+        disabled: busy.has(key),
+        dataset: { fid: "ch.approve" },
+        onclick: () => {
+          if (!count) return approveChapter(n);
+          confirmCh = n;
+          focusFid = "ch.approve.yes";
+          render();
+        },
+      },
+      busy.has(key) ? h("span", { class: "sw-spinner" }) : icon("check"),
+      "Approve chapter",
+    );
+  }
+
+  /// "Request changes": an optional overall note (added to the story's
+  /// rules unless unticked) sent with every note of the round.
+  function requestForm(n, info) {
+    const r = requesting;
+    const count = info.notes.length;
+    const sending = busy.has(`decide:${n}`);
+    const can = count > 0 || !!String(r.summary || "").trim();
+    const submit = (e) => {
+      e.preventDefault();
+      requestChanges(n);
+    };
+    return h(
+      "form",
+      { class: "sw-fb sw-req", onsubmit: submit },
+      h(
+        "label",
+        { class: "sw-label", for: `sw-req-${n}` },
+        `Request changes on ${n === 1 ? "the pilot" : `chapter ${n}`}`,
+        h(
+          "span",
+          { class: "sw-hint" },
+          count
+            ? `Your ${plural(count, "note")} go to the writer, anchored to their lines. The redraft is cold-read again and comes back as round ${info.roundNo + 1}.`
+            : `No line notes yet — the overall note goes to the writer. The redraft comes back as round ${info.roundNo + 1}.`,
         ),
       ),
-    ];
+      h("textarea", {
+        id: `sw-req-${n}`,
+        class: "sw-textarea sm",
+        rows: 3,
+        value: r.summary,
+        disabled: sending,
+        placeholder: "Overall note (optional) — anything about the whole chapter, e.g. “Keep Mara cold until the last scene.”",
+        dataset: { fid: "req.summary" },
+        oninput: (e) => {
+          r.summary = e.target.value;
+          const b = container.querySelector('[data-fid="req.send"]');
+          if (b) b.disabled = !(count > 0 || e.target.value.trim());
+        },
+        onkeydown: (e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(e);
+        },
+      }),
+      h(
+        "label",
+        { class: "sw-check" },
+        h("input", {
+          type: "checkbox",
+          checked: r.toRules,
+          disabled: sending,
+          dataset: { fid: "req.rules" },
+          onchange: (e) => {
+            r.toRules = e.target.checked;
+          },
+        }),
+        "Also add the overall note to the story's rules, so every later chapter follows it",
+      ),
+      h(
+        "div",
+        { class: "sw-fb-actions" },
+        h(
+          "button",
+          {
+            class: "sw-btn secondary",
+            type: "button",
+            disabled: sending,
+            dataset: { fid: "req.cancel" },
+            onclick: () => {
+              requesting = null;
+              focusFid = "req.open";
+              render();
+            },
+          },
+          "Cancel",
+        ),
+        h("span", { class: "sw-spacer" }),
+        h(
+          "button",
+          { class: "sw-btn", type: "submit", disabled: sending || !can, dataset: { fid: "req.send" } },
+          sending ? h("span", { class: "sw-spinner" }) : icon("send"),
+          count ? `Send ${plural(count, "note")}` : "Send",
+        ),
+      ),
+    );
   }
 
   // ── lifecycle ──────────────────────────────────────────────────────────
@@ -2506,6 +3296,21 @@ export function mountDashboard(container, opts) {
     if (document.visibilityState === "visible" && wantsCards()) scheduleCards(CARDS_SOON_MS);
   };
   document.addEventListener("visibilitychange", onVisible);
+  // A press outside the note popover (and outside the text it annotates)
+  // closes it, the way PeckBoard's Review page does.
+  const onDocDown = (e) => {
+    if (!e.target || !e.target.closest) return;
+    dragging = e.button === 0 && !!e.target.closest(".sw-prose.annotatable");
+    if (!pop) return;
+    if (e.target.closest(".sw-pop") || e.target.closest(".sw-prose.annotatable")) return;
+    pop = null;
+    render();
+  };
+  const onDocUp = () => {
+    dragging = false;
+  };
+  document.addEventListener("mousedown", onDocDown);
+  document.addEventListener("mouseup", onDocUp, true);
 
   render();
   if (wantsCards()) loadCards();
@@ -2521,6 +3326,8 @@ export function mountDashboard(container, opts) {
       destroyed = true;
       clearTimeout(cardsTimer);
       document.removeEventListener("visibilitychange", onVisible);
+      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("mouseup", onDocUp, true);
       window.removeEventListener("scroll", hideTip, true);
       container.removeEventListener("mouseover", onOver);
       container.removeEventListener("focusin", onOver);

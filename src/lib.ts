@@ -12,6 +12,7 @@ import {
   toolSubmitChapter,
   toolSubmitColdRead,
   toolSubmitColdReadFixes,
+  toolSubmitOwnerReviewFixes,
   toolSubmitRecords,
   toolUpdateState,
 } from "./tools";
@@ -30,6 +31,7 @@ const TOOLS: Record<string, (args: any, context: any) => any> = {
   story_cold_read_get_text: toolColdReadGetText,
   story_submit_cold_read: toolSubmitColdRead,
   story_submit_cold_read_fixes: toolSubmitColdReadFixes,
+  story_submit_owner_review_fixes: toolSubmitOwnerReviewFixes,
 };
 
 export function dispatch(hook: string, payload: any): string {

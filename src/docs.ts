@@ -11,6 +11,7 @@ import {
   ChapterDoc,
   EngineState,
   Feedback,
+  OwnerReviewDoc,
   RECORD_ID_KEY,
   RECORD_REQUIRED_FIELDS,
   RECORD_SECTIONS,
@@ -158,6 +159,24 @@ export function listColdReads(projectId: string): ColdReadDoc[] {
   return listDocs("coldreads")
     .filter((d) => d.key.startsWith(prefix))
     .map((d) => d.value as ColdReadDoc)
+    .sort((a, b) => a.chapter - b.chapter);
+}
+
+// ── Owner review rounds (SW-12) ────────────────────────────────────
+
+export function getOwnerReview(projectId: string, chapter: number): OwnerReviewDoc | null {
+  return getDoc("owner_reviews", pk(projectId, chapter)) ?? null;
+}
+
+export function putOwnerReview(projectId: string, doc: OwnerReviewDoc): void {
+  putDoc("owner_reviews", pk(projectId, doc.chapter), doc);
+}
+
+export function listOwnerReviews(projectId: string): OwnerReviewDoc[] {
+  const prefix = `${projectId}:`;
+  return listDocs("owner_reviews")
+    .filter((d) => d.key.startsWith(prefix))
+    .map((d) => d.value as OwnerReviewDoc)
     .sort((a, b) => a.chapter - b.chapter);
 }
 

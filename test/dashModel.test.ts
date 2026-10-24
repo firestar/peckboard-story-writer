@@ -36,6 +36,7 @@ function st(patch: any = {}): any {
     feedback: patch.feedback || [],
     cards: [],
     cold_reads: patch.coldReads || [],
+    owner_reviews: patch.ownerReviews || [],
   };
 }
 
@@ -562,5 +563,120 @@ describe("dash model: first introductions and unexplained names (C3)", () => {
     expect(all.counts).toEqual({ scenes: 2, total: 5, answered: 2, unanswered: 3, overdue: 2, overCap: 1, flagged: 1 });
     expect(D.unexplainedList(s, "unanswered").rows.map((r: any) => r.items.length)).toEqual([2, 1]);
     expect(D.unexplainedList(s, "flagged").rows.map((r: any) => r.id)).toEqual(["s1"]);
+  });
+});
+describe("dash model: owner review rounds (SW-12)", () => {
+  const TEXT = ["# Chapter 1", "", "Rain on the roof.", "Jun counted.", "", "> A sign: CLOSED", "", "---", "", "They left."].join("\n");
+  const doc = (n: number, revision = 2) => ({ chapter: n, revision, recap: null, length: 10, submitted_at: "" });
+  const note = (id: string, start: number, end = start, patch: any = {}) => ({
+    id,
+    kind: "comment",
+    start_line: start,
+    end_line: end,
+    quote: "",
+    body: "b",
+    revision: 2,
+    created_at: "",
+    resolution: null,
+    ...patch,
+  });
+  const clearPilot = [unit("pilot", { status: "done", chapter: 1 }), unit("cold_read:1", { status: "done", chapter: 1 })];
+  const clearCold = [{ chapter: 1, attempt: 1, chapter_revision: 2, items: [], first_three_lines: null, characters: [], submitted_at: "" }];
+
+  it("splits the text into blocks with their source line ranges", () => {
+    expect(D.proseBlocks(TEXT).map((b: any) => [b.type, b.start, b.end])).toEqual([
+      ["heading", 1, 1],
+      ["para", 3, 4],
+      ["quote", 6, 6],
+      ["hr", 8, 8],
+      ["para", 10, 10],
+    ]);
+    expect(D.proseBlocks("A\r\n# H\r\nB").map((b: any) => [b.type, b.start])).toEqual([
+      ["para", 1],
+      ["heading", 2],
+      ["para", 3],
+    ]);
+  });
+
+  it("puts each note under the block holding its first line (or the next block)", () => {
+    const blocks = D.proseBlocks(TEXT);
+    const at = D.placeNotes(blocks, [note("n1", 4), note("n2", 5), note("n3", 99), note("n4", 1)]);
+    expect(at.map((xs: any[]) => xs.map((x) => x.id))).toEqual([["n4"], ["n1"], ["n2"], [], ["n3"]]);
+  });
+
+  it("the pilot at the gate is reviewable; an open round's notes count; approve stays open", () => {
+    const s = st({ stage: "pilot_review", units: clearPilot, docs: [doc(1)], coldReads: clearCold, ownerReviews: [{ chapter: 1, rounds: [{ round: 1, chapter_revision: 2, status: "open", notes: [note("n1", 3)], opened_at: "" }] }] });
+    const r = D.reviewInfo(s, 1, null);
+    expect(r).toMatchObject({ canReview: true, why: null, roundNo: 1, revision: 2, pending: null });
+    expect(r.notes.map((n: any) => n.id)).toEqual(["n1"]);
+    expect(D.gateInfo(s)).toMatchObject({ active: true, redraft: false, canApprove: true });
+  });
+
+  it("a requested round blocks approval and reports where the redraft stands", () => {
+    const pending = { chapter: 1, rounds: [{ round: 1, chapter_revision: 2, status: "changes_requested", notes: [note("n1", 3)], opened_at: "", decided_revision: 2 }] };
+    const writing = st({ stage: "pilot_review", units: [...clearPilot, unit("revision:owner:1:1", { chapter: 1, round: 1, card_id: "c9" })], docs: [doc(1)], coldReads: clearCold, ownerReviews: [pending] });
+    const r = D.reviewInfo(writing, 1, null);
+    expect(r).toMatchObject({ canReview: false, roundNo: 1 });
+    expect(r.phase.key).toBe("revising");
+    expect(D.gateInfo(writing)).toMatchObject({ redraft: true, canApprove: false });
+    expect(D.unitLabel(writing.engine.units["revision:owner:1:1"])).toBe("Pilot · redraft from your round 1 notes");
+    expect(D.stageOfUnit(writing.engine.units["revision:owner:1:1"])).toBe("pilot_review");
+
+    const reading = st({
+      stage: "pilot_review",
+      units: [unit("pilot", { status: "done", chapter: 1 }), unit("cold_read:1", { chapter: 1, attempt: 2, card_id: "c10" }), unit("revision:owner:1:1", { status: "done", chapter: 1, round: 1 })],
+      docs: [doc(1, 3)],
+      coldReads: clearCold,
+      ownerReviews: [pending],
+    });
+    expect(D.reviewInfo(reading, 1, null).phase.key).toBe("cold_read");
+    const failed = st({ stage: "pilot_review", units: [...clearPilot, unit("revision:owner:1:1", { chapter: 1, round: 1, status: "failed", note: "x" })], docs: [doc(1)], ownerReviews: [pending] });
+    expect(D.reviewInfo(failed, 1, null).phase).toMatchObject({ key: "failed" });
+  });
+
+  it("says why a chapter can't be reviewed yet", () => {
+    expect(D.reviewInfo(st({ stage: "pilot" }), 1, null).why).toMatch(/once it's written/);
+    const ch = st({ stage: "chapters", approved: true, units: [...clearPilot, unit("chapter:2", { status: "done", chapter: 2 }), unit("cold_read:2", { chapter: 2 })], docs: [doc(1), doc(2)], coldReads: clearCold });
+    expect(D.reviewInfo(ch, 3, null).why).toBe("Not written yet.");
+    expect(D.reviewInfo(ch, 2, null).why).toMatch(/cold read/);
+    expect(D.reviewInfo(ch, 1, null).canReview).toBe(true);
+  });
+
+  it("lists rounds newest first with resolution counts, and totals them", () => {
+    const fixed = (id: string, action: string) => note(id, 3, 3, { resolution: { action, how: "h", at: "" } });
+    const s = st({
+      stage: "chapters",
+      approved: true,
+      units: clearPilot,
+      docs: [doc(1, 4)],
+      coldReads: clearCold,
+      ownerReviews: [
+        {
+          chapter: 1,
+          rounds: [
+            { round: 1, chapter_revision: 2, status: "revised", notes: [fixed("n1", "fixed"), fixed("n2", "declined"), fixed("n3", "answered")], opened_at: "", decided_revision: 2, revised_revision: 4 },
+            { round: 2, chapter_revision: 4, status: "approved", notes: [], opened_at: "", decided_revision: 4 },
+          ],
+        },
+      ],
+    });
+    const rows = D.roundRows(s, 1, null);
+    expect(rows.map((r: any) => [r.round, r.statusInfo.label])).toEqual([
+      [2, "Approved"],
+      [1, "Redrafted"],
+    ]);
+    expect(rows[1]).toMatchObject({ fixed: 1, declined: 1, answered: 1, draftRevision: 2, revised_revision: 4 });
+    expect(D.reviewInfo(s, 1, null)).toMatchObject({ approved: true, roundNo: 3 });
+    expect(D.reviewTotals(s)).toEqual({ sent: 3, unsent: 0, redrafting: 0, approved: 1 });
+    expect(D.lineLabel(note("n1", 4, 6))).toBe("lines 4–6");
+  });
+
+  it("links an owner feedback entry to its round's revision card", () => {
+    const s = st({
+      stage: "pilot_review",
+      units: [unit("revision:owner:1:2", { chapter: 1, round: 2 })],
+      feedback: [{ id: "fb-1", source: "owner", chapter: 1, text: "t", appended_to_rules: false, round: 2, at: "2026-01-01" }],
+    });
+    expect(D.feedbackRows(s, null)[0].unit.id).toBe("revision:owner:1:2");
   });
 });

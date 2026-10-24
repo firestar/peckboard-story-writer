@@ -9,8 +9,22 @@
 import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
 import { listCards, listModels, requireProjectId } from "./host";
-import { getAllRecords, getBrief, getCards, getChapter, getEngine, getFeedback, getPipelineState, listChapters, listColdReads, listReviews, putBrief } from "./docs";
-import { MAX_CHAPTERS, PipelineConflict, assembleExport, modelFor, requestApprove, requestFeedback, requestGenerate, requestRetry, requestStart } from "./pipeline";
+import { getAllRecords, getBrief, getCards, getChapter, getEngine, getFeedback, getPipelineState, listChapters, listColdReads, listOwnerReviews, listReviews, putBrief } from "./docs";
+import {
+  MAX_CHAPTERS,
+  PipelineConflict,
+  assembleExport,
+  modelFor,
+  requestApprove,
+  requestFeedback,
+  requestGenerate,
+  requestOwnerDecision,
+  requestOwnerNote,
+  requestOwnerNoteDelete,
+  requestOwnerNoteUpdate,
+  requestRetry,
+  requestStart,
+} from "./pipeline";
 import { DEFAULT_BANNED, styleGuide } from "./prompts";
 import { mergeWizardUpdate, normalizeBrief } from "./wizard";
 import { DEFAULT_WRITER_MODEL, ELEMENT_KEYS, ELEMENT_MODE_LABELS, defaultBrief } from "./types";
@@ -85,6 +99,22 @@ export function serveAuthed(payload: any): string {
     if (method === "GET" && path === `${API}/chapter`) {
       return jsonResponse(200, getChapterText(str(payload?.query)));
     }
+    if (method === "POST" && path === `${API}/review/note`) {
+      const b = parseBody(body);
+      return jsonResponse(200, requestOwnerNote(requireProjectId(), chapterOf(b), b));
+    }
+    if (method === "POST" && path === `${API}/review/note/update`) {
+      const b = parseBody(body);
+      return jsonResponse(200, requestOwnerNoteUpdate(requireProjectId(), chapterOf(b), b.id, b));
+    }
+    if (method === "POST" && path === `${API}/review/note/delete`) {
+      const b = parseBody(body);
+      return jsonResponse(200, requestOwnerNoteDelete(requireProjectId(), chapterOf(b), b.id));
+    }
+    if (method === "POST" && path === `${API}/review/decide`) {
+      const b = parseBody(body);
+      return jsonResponse(200, requestOwnerDecision(requireProjectId(), chapterOf(b), b.decision, b.summary, b.add_to_rules));
+    }
   } catch (e) {
     return jsonResponse(e instanceof PipelineConflict ? 409 : 400, { error: errMsg(e) });
   }
@@ -95,6 +125,13 @@ function pipelineGenerate(body: any): any {
   const projectId = requireProjectId();
   const elements = Array.isArray(body?.elements) ? body.elements : undefined;
   return requestGenerate(projectId, elements);
+}
+
+/// The chapter a review route is about (body `chapter`, a number).
+function chapterOf(body: any): number {
+  const n = body?.chapter;
+  if (typeof n !== "number" || !Number.isInteger(n) || n < 1) throw new Error("chapter (a chapter number) is required");
+  return n;
 }
 
 function pipelineFeedback(body: any): any {
@@ -132,6 +169,7 @@ function getState(): any {
     feedback: getFeedback(projectId),
     cards: getCards(projectId),
     cold_reads: listColdReads(projectId),
+    owner_reviews: listOwnerReviews(projectId),
   };
 }
 

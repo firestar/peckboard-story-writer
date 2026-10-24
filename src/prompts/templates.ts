@@ -73,6 +73,8 @@ export interface PromptFeedback {
   chapter?: number | null;
   text: string;
   at?: string;
+  /// Owner review line notes (SW-12): only for cards about that chapter.
+  chapter_only?: boolean;
 }
 
 export interface RenderInput {
@@ -171,10 +173,11 @@ export function rulesSection(brief: PromptBrief | null, keep = Infinity): string
 }
 
 function filterFeedback(kind: StageKind, feedback: PromptFeedback[], chapter?: number): PromptFeedback[] {
+  const relevant = feedback.filter((f) => !f.chapter_only || f.chapter === chapter);
   if (kind === "chapter" || kind === "pilot" || kind === "revision" || kind === "review") {
-    return feedback.filter((f) => (f.source ?? "owner") === "owner" || f.chapter === chapter);
+    return relevant.filter((f) => (f.source ?? "owner") === "owner" || f.chapter === chapter);
   }
-  return feedback.filter((f) => (f.source ?? "owner") === "owner");
+  return relevant.filter((f) => (f.source ?? "owner") === "owner");
 }
 
 function feedbackSection(feedback: PromptFeedback[], budget: number): string {

@@ -475,7 +475,8 @@ export interface CardRef {
 /// values as `prompts.StageKind` (kept separate so types.ts doesn't depend
 /// on the prompts module) — a Unit's `kind` is always a valid `renderCard`
 /// input, except cold_read/cold_read_fix which are rendered directly by
-/// src/prompts/coldRead.ts (SW-9), not through renderCard/StageKind.
+/// src/prompts/coldRead.ts (SW-9), not through renderCard/StageKind, and
+/// owner-review revisions, rendered by src/prompts/ownerReview.ts (SW-12).
 export const UNIT_KINDS = ["records", "pilot", "chapter", "review", "revision", "generate", "cold_read", "cold_read_fix"] as const;
 export type UnitKind = (typeof UNIT_KINDS)[number];
 
@@ -496,6 +497,14 @@ export interface Unit {
   chapter?: number;
   pass?: ReviewPass;
   element?: ElementKey;
+  /// Owner-review revisions ("revision:owner:<chapter>:<round>"): the round
+  /// whose notes the card addresses.
+  round?: number;
+  /// Owner-review revisions: the redraft's cold read was reset (the chain
+  /// re-runs on the new draft) — `settled` once it cleared and the next
+  /// round opened.
+  cold_reset?: boolean;
+  settled?: boolean;
   note?: string;
   created_at: string;
   updated_at: string;
@@ -550,7 +559,108 @@ export interface Feedback {
   text: string;
   appended_to_rules: boolean;
   card_id?: string;
+  /// Owner review notes (SW-12): line notes about this chapter only — later
+  /// cards for other chapters don't carry them (the overall note, when added
+  /// to the rules, already reaches every card through the rules).
+  chapter_only?: boolean;
+  round?: number;
   at: string;
+}
+
+// ── Owner review rounds (SW-12) ──────────────────────────────────────────
+// Every draft that reaches the owner (the pilot at the gate, or any written
+// chapter the owner opens) is reviewed in rounds: the owner anchors notes to
+// lines of the chapter text, then approves or requests changes. Requesting
+// changes sends every note to a writer card (addressed one by one, each with
+// a recorded resolution, like cold-read fixes); the redraft is cold-read
+// again and comes back as the next round. Earlier rounds stay as history.
+// Same shape PeckBoard's own Review page uses for its annotations
+// (docs/host-review-api.md), so a later switch to it (SW-14) keeps the model.
+
+export const OWNER_NOTE_KINDS = ["comment", "suggest", "wrong", "expand", "shorten"] as const;
+export type OwnerNoteKind = (typeof OWNER_NOTE_KINDS)[number];
+
+export const OWNER_NOTE_KIND_LABELS: Record<OwnerNoteKind, string> = {
+  comment: "Comment",
+  suggest: "Suggest edit",
+  wrong: "Mark wrong",
+  expand: "Expand",
+  shorten: "Shorten",
+};
+
+/// Expand/shorten carry their whole instruction in the verb; the rest need
+/// a body to act on.
+export const OWNER_NOTE_NEEDS_BODY: Record<OwnerNoteKind, boolean> = {
+  comment: true,
+  suggest: true,
+  wrong: true,
+  expand: false,
+  shorten: false,
+};
+
+export const OWNER_NOTE_ACTIONS = ["fixed", "answered", "declined"] as const;
+export type OwnerNoteAction = (typeof OWNER_NOTE_ACTIONS)[number];
+
+export const MAX_OWNER_NOTES_PER_ROUND = 100;
+export const MAX_OWNER_NOTE_CHARS = 4000;
+export const MAX_OWNER_QUOTE_CHARS = 1000;
+export const MAX_OWNER_SUMMARY_CHARS = 4000;
+
+export interface OwnerNoteResolution {
+  action: OwnerNoteAction;
+  how: string;
+  at: string;
+}
+
+export interface OwnerNote {
+  id: string; // "n1", "n2", ... within its round
+  kind: OwnerNoteKind;
+  /// 1-based line range of the chapter markdown at `revision`.
+  start_line: number;
+  end_line: number;
+  /// The passage as the owner saw it — the writer finds it by the quote if
+  /// later edits moved the lines.
+  quote: string;
+  body: string;
+  revision: number;
+  created_at: string;
+  updated_at?: string;
+  resolution: OwnerNoteResolution | null;
+}
+
+/// open: the owner is reviewing (notes can be added, edited, deleted).
+/// changes_requested: notes sent; the revision card, then the redraft's cold
+/// read, are running. revised: the redraft cleared its cold read and the
+/// next round opened on it. approved: the owner accepted this draft.
+export type OwnerRoundStatus = "open" | "changes_requested" | "revised" | "approved";
+
+export interface OwnerReviewRound {
+  round: number;
+  /// Chapter revision when the round opened.
+  chapter_revision: number;
+  status: OwnerRoundStatus;
+  notes: OwnerNote[];
+  /// Overall note sent with "Request changes" (the old free-text feedback).
+  summary?: string;
+  summary_to_rules?: boolean;
+  feedback_id?: string;
+  opened_at: string;
+  decided_at?: string;
+  /// Chapter revision the owner decided on — the writer's redraft must be
+  /// newer than this.
+  decided_revision?: number;
+  fixes_at?: string;
+  revised_revision?: number;
+  revised_at?: string;
+  /// PeckBoard Review page id, once the host supports it (SW-14).
+  host_review_id?: string;
+  /// Next note id number (note ids are never reused within a round).
+  next_note?: number;
+}
+
+export interface OwnerReviewDoc {
+  chapter: number;
+  rounds: OwnerReviewRound[];
 }
 
 export function nowIso(): string {

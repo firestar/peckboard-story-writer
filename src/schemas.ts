@@ -4,7 +4,17 @@
 // means a tool's declared contract and its enforced contract can't drift.
 
 import type { Schema } from "./validate";
-import { COLD_READ_CATEGORIES, MAX_UNEXPLAINED_PER_SCENE, RECORD_ID_KEY, RECORD_SECTIONS, RecordSection, REVIEW_PASSES, STAGES, STAGE_STATUSES } from "./types";
+import {
+  COLD_READ_CATEGORIES,
+  MAX_UNEXPLAINED_PER_SCENE,
+  OWNER_NOTE_ACTIONS,
+  RECORD_ID_KEY,
+  RECORD_SECTIONS,
+  RecordSection,
+  REVIEW_PASSES,
+  STAGES,
+  STAGE_STATUSES,
+} from "./types";
 
 export const EMPTY_SCHEMA: Schema = { type: "object", properties: {}, additionalProperties: false };
 
@@ -236,6 +246,35 @@ export const SCHEMAS = {
       },
     },
     required: ["chapter", "fixes"],
+    additionalProperties: false,
+  } as Schema,
+
+  story_submit_owner_review_fixes: {
+    type: "object",
+    properties: {
+      chapter: { type: "integer", minimum: 1 },
+      round: { type: "integer", minimum: 1, description: "The owner review round the card names." },
+      resolutions: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            note: ID,
+            action: {
+              type: "string",
+              enum: OWNER_NOTE_ACTIONS,
+              description:
+                "fixed = the text now does what the note asks; answered = the note was a question (how = the answer); " +
+                "declined = only when the note conflicts with the brief, the records or an earlier owner decision (how = the conflict).",
+            },
+            how: { type: "string", minLength: 1, description: "What changed in the text, the answer, or why it was declined." },
+          },
+          required: ["note", "action", "how"],
+        },
+        description: "One entry per owner note id on the card (n1, n2, ...).",
+      },
+    },
+    required: ["chapter", "round", "resolutions"],
     additionalProperties: false,
   } as Schema,
 } as const;

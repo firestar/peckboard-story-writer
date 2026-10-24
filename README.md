@@ -9,10 +9,12 @@ pilot chapter -> owner review gate -> chapters in parallel -> review passes
 (structure, character, pacing, line, copyedit, plus AI-tell / echo-word /
 sentence-shape) -> final export.
 
-Worker sessions pull context and push results through six MCP tools —
+Worker sessions pull context and push results through ten MCP tools —
 `story_get_brief`, `story_get_records`, `story_submit_records`,
-`story_submit_chapter`, `story_update_state`, `story_report_review` — and the
-plugin stores everything (`data_store`) and mirrors chapters into the
+`story_submit_chapter`, `story_update_state`, `story_report_review`, the
+cold-read trio `story_cold_read_get_text` / `story_submit_cold_read` /
+`story_submit_cold_read_fixes`, and `story_submit_owner_review_fixes` — and
+the plugin stores everything (`data_store`) and mirrors chapters into the
 project's `story/` folder (`project_files_write`).
 
 Modelled on [PeckBoard/project-planner](https://github.com/PeckBoard/project-planner):
@@ -215,16 +217,20 @@ status, worker status, grid cells, record tables) lives in
   **Export** (downloads every written chapter as one Markdown file via
   `GET .../export`) and **View setup** (the wizard, read-only). Stat tiles:
   stage, chapters written, review passes done, cards with a worker right
-  now, and the owner's feedback count.
-- Owner gate: while the stage is `pilot_review` a banner offers **Read
-  pilot**, **Send feedback** and **Approve pilot…** (confirm step; disabled
-  while a pilot revision from feedback is still open) and notes what the
-  pilot's cold read found and that it's all fixed. Before that — pilot
-  written, cold read or its fixes still open — the gate shows the pilot as
-  *not ready*: readable, with a link to the cold-read report and a fixed /
-  total meter, but not approvable. Failed cards get a banner with
-  **Retry** / **Retry all** (`/pipeline/retry`); a finished story gets
-  **Download manuscript**.
+  now, and your review (notes sent, notes not sent yet, redrafts running).
+- Owner gate: while the stage is `pilot_review` a banner shows the round
+  ("Waiting on you · round 2", notes not sent yet, earlier rounds) and
+  offers **Read & review pilot**, **Request changes** and **Approve pilot…**
+  (confirm step, which warns about notes not sent; disabled while a
+  redraft runs) and notes what the pilot's cold read found. After a
+  request the banner follows the redraft — the writer working through
+  your notes, then the fresh cold read of the redraft — with the session
+  link (or **Retry** if a card failed), until the redraft comes back as
+  the next round. Before that — pilot written, cold read or its fixes
+  still open — the gate shows the pilot as *not ready*: readable, with a
+  link to the cold-read report and a fixed / total meter, but not
+  approvable. Failed cards get a banner with **Retry** / **Retry all**
+  (`/pipeline/retry`); a finished story gets **Download manuscript**.
 - Stage timeline: Records -> Pilot chapter -> Cold read -> Cold-read fix ->
   Your review -> Chapters -> Review passes -> Final, each with its status
   and progress (the pilot's cold read and fixes are their own steps; a
@@ -232,20 +238,36 @@ status, worker status, grid cells, record tables) lives in
   work, the board card (title + step), the worker status (queued / waiting
   for a worker / working / blocked / done / failed / card missing),
   **Open session** (posts `plugin-ui-open-session` so PeckBoard opens the
-  worker's session tab) and **Retry**. Revisions from the owner's feedback
-  are listed under "Your review"; review-pass revisions under "Review
+  worker's session tab) and **Retry**. Redrafts from your review are
+  listed under "Your review"; review-pass revisions under "Review
   passes".
 - Chapter grid: one row per chapter, a cell for the draft, the cold read
   (Read: reading / nothing found / N items found) and its fixes (Fixes: k
   of N fixed), and each of the eight review passes (status icon + label +
-  tooltip, never colour alone), plus revising / feedback notes. Any cell or
+  tooltip, never colour alone), plus revising / your review (notes not
+  sent, redrafting, approved). Any cell or
   chapter opens the reader.
 - Chapter reader (side drawer): Text (`GET .../chapter?n=N`, rendered
-  from a safe Markdown subset as DOM), Cold read, Reviews (every round's
-  verdict and notes), Scenes (scene-fact sheets with their unexplained
-  names), Feedback, and a feedback box that posts `/pipeline/feedback`
-  (revision card + story rule); the pilot's reader also carries Approve.
+  from a safe Markdown subset as DOM, every block carrying its source line
+  range), Cold read, Reviews (every round's verdict and notes), Scenes
+  (scene-fact sheets with their unexplained names), and Your review.
   Esc closes, Tab is trapped, prev/next chapter buttons.
+- Owner review (SW-12), the same way PeckBoard's Review page annotates
+  documents: on a reviewable chapter (the pilot at the gate, or any
+  written chapter whose cold read cleared) click a paragraph, press Enter
+  on it, or select a phrase (across paragraphs too) to open a popover with
+  **Comment**, **Suggest edit**, **Mark wrong**, **Expand** and
+  **Shorten**, then the note's text. Notes show under their paragraph
+  (pin + tint), editable and deletable until you decide. The footer counts
+  the round's notes and offers **Request changes** (an optional overall
+  note, added to the story's rules unless unticked) and **Approve** (the
+  pilot's gate approval, or Approve chapter). Your review lists every
+  round, newest first: draft revision, status, every note with the
+  writer's resolution (fixed / answered / declined + how), the overall
+  note. On a phone the popover is a bottom sheet. The plugin can't reach
+  PeckBoard's own Review page yet; `docs/host-review-api.md` is the host
+  change (SW-13) that lets a later card (SW-14) move note-taking there on
+  the same round model.
 - Cold-read viewer (drawer tab, and the Cold reads records tab with a
   per-chapter overview): confusion items and over-explained / obvious lines
   counted apart (clickable tiles), a category dropdown (every category) and
@@ -311,11 +333,28 @@ card's own description.
   `GET .../export` (src/http.ts) are the owner/wizard actions: queue
   AI-generate-element cards, start the pipeline (gated on every
   draft/generate element being owner-approved), approve the pilot (unblocks
-  the queued chapter cards), leave feedback on the pilot or any chapter
-  (recorded, appended to style_rules, turned into a revision card), retry a
-  failed unit, and assemble the final manuscript. A request the current
-  stage doesn't allow (approve before pilot_review or with a pilot
-  revision open, a second start, ...) answers 409.
+  the queued chapter cards), leave free-text feedback on the pilot or any
+  chapter (the fallback: an overall note with no line notes, appended to
+  style_rules — same redraft loop as below), retry a failed unit, and
+  assemble the final manuscript. A request the current stage doesn't allow
+  (approve before pilot_review, with a pilot revision open or a redraft
+  running, a second start, ...) answers 409.
+- Owner review rounds (`owner_reviews` docs, `src/ownerReview.ts`):
+  `POST .../review/note {chapter, kind, start_line, end_line, quote, body}`,
+  `.../review/note/update`, `.../review/note/delete` and
+  `.../review/decide {chapter, decision: approve|changes, summary?, add_to_rules?}`.
+  A chapter is reviewable from the gate on once written and its cold read
+  cleared. "changes" turns every note into one feedback entry and a
+  `revision:owner:<chapter>:<round>` card that lists each note (id, kind,
+  lines, quote, text) and tells the writer to address every one and record
+  how with `story_submit_owner_review_fixes` (fixed / answered / declined
+  with the conflict named); the card only counts as done once every note
+  has a resolution and (unless every note was only answered or declined)
+  the chapter has a newer draft. Then the chapter's cold read and fixes
+  re-run on the redraft (in chapter order during the chapter stage), and
+  once they clear the round closes as redrafted and the next round opens
+  on the new draft. The chapter stage waits for pending redrafts. Rounds
+  are mirrored to `story/reviews/chapter-NN-owner.md`.
 - Each review pass allows up to `MAX_REVIEW_ROUNDS` (2) attempts
   (`changes_requested` -> a revision card -> the same pass again) before
   moving on regardless, so one stubborn pass can't stall a chapter forever.
@@ -330,7 +369,7 @@ This is the scaffold (SW-1), the data model, chunked store and worker MCP
 tools (SW-2), the prompt pack (SW-3), the pipeline stage machine (SW-4),
 the setup wizard (SW-5), the pipeline dashboard (SW-6), the 2026-10-23
 lessons (SW-8), the cold-read stage (SW-9) and its dashboard / wizard side
-(SW-10): manifest, hook/tool dispatch, the story_* tools, the
+(SW-10), and owner review rounds (SW-12): manifest, hook/tool dispatch, the story_* tools, the
 writing-lessons prompt pack with per-stage card templates, the card-driven
 pipeline engine, and the Story tab's wizard and live dashboard described
 above. Screenshots (Playwright, local PeckBoard with the plugin installed)
@@ -351,4 +390,17 @@ are `docs/screenshots/wizard-*.png` (listed under Setup wizard) and
 [chapter cold reads](docs/screenshots/dashboard-chapters-cold-reads.png),
 [grid](docs/screenshots/dashboard-chapter-grid-cold-read.png),
 [dark](docs/screenshots/dashboard-dark-cold-read-report.png),
-[dark at 420 px](docs/screenshots/dashboard-dark-mobile-cold-read.png).
+[dark at 420 px](docs/screenshots/dashboard-dark-mobile-cold-read.png);
+owner review (SW-12): [gate, round 1](docs/screenshots/review-gate-round-1.png),
+[the note popover](docs/screenshots/review-popover-verbs.png),
+[writing a note](docs/screenshots/review-popover-editor.png),
+[notes under their paragraphs](docs/screenshots/review-notes-inline.png),
+[round 1 open](docs/screenshots/review-tab-round-1-open.png),
+[request changes](docs/screenshots/review-request-changes-form.png),
+[redraft: writer](docs/screenshots/review-gate-redraft-writing.png),
+[redraft: cold read](docs/screenshots/review-gate-redraft-cold-read.png),
+[gate, round 2](docs/screenshots/review-gate-round-2.png),
+[round history](docs/screenshots/review-tab-rounds-history.png),
+[grid: approved](docs/screenshots/review-grid-approved.png),
+[dark at 420 px, bottom sheet](docs/screenshots/review-dark-mobile-sheet.png),
+[dark rounds](docs/screenshots/review-dark-rounds.png).

@@ -1,8 +1,9 @@
-// The nine worker-facing MCP tools (story_get_brief, story_get_records,
+// The ten worker-facing MCP tools (story_get_brief, story_get_records,
 // story_submit_records, story_submit_chapter, story_update_state,
 // story_report_review, story_cold_read_get_text, story_submit_cold_read,
-// story_submit_cold_read_fixes). Each is scoped to the calling project
-// (`requireProjectId`), validates its input against src/schemas.ts (the same
+// story_submit_cold_read_fixes, story_submit_owner_review_fixes). Each is
+// scoped to the calling project (`requireProjectId`), validates its input
+// against src/schemas.ts (the same
 // schemas the manifest declares), persists through the typed doc store
 // (src/docs.ts), and mirrors the human-readable result into the project
 // repo under story/ (src/files.ts, project_files_write — only allowed during
@@ -25,6 +26,9 @@ import {
   getChapter,
   getColdRead,
   getFeedback,
+  getOwnerReview,
+  listOwnerReviews,
+  putOwnerReview,
   getPipelineState,
   getRecordSection,
   getReview,
@@ -40,8 +44,8 @@ import {
   setSessionRole,
   upsertSection,
 } from "./docs";
-import { chapterFileName, writeBrief, writeChapter, writeColdRead, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
-import { Brief, ChapterDoc, ColdReadDoc, ColdReadItem, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, StageId, nowIso } from "./types";
+import { chapterFileName, writeBrief, writeChapter, writeColdRead, writeOwnerReview, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
+import { Brief, ChapterDoc, ColdReadDoc, ColdReadItem, OwnerNoteAction, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, StageId, nowIso } from "./types";
 
 const SESSION_ROLE_ERRORS: Record<SessionRole, string> = {
   context:
@@ -90,6 +94,13 @@ export function toolGetBrief(args: any, _context: any): any {
     rules: getRules(projectId),
     feedback: getFeedback(projectId),
     state: getPipelineState(projectId),
+    // Owner review rounds being redrafted right now (SW-12): every note in
+    // full, for a revision card whose description had to clip them.
+    owner_reviews: listOwnerReviews(projectId).flatMap((doc) =>
+      doc.rounds
+        .filter((r) => r.status === "changes_requested")
+        .map((r) => ({ chapter: doc.chapter, round: r.round, revision: r.decided_revision ?? r.chapter_revision, notes: r.notes, summary: r.summary ?? null })),
+    ),
   };
 }
 
@@ -342,4 +353,40 @@ export function toolSubmitColdReadFixes(args: any, _context: any): any {
 
   const unfixed = doc.items.filter((i) => i.fix === null).map((i) => i.id);
   return { ok: true, unfixed };
+}
+
+/// Record, for one owner review round, how the writer handled every note
+/// (SW-12) — fixed, answered, or declined with the conflict named. The
+/// pipeline won't count the revision card as done until every note of the
+/// round has one. All-or-nothing: an unknown note id writes nothing.
+export function toolSubmitOwnerReviewFixes(args: any, _context: any): any {
+  validate(SCHEMAS.story_submit_owner_review_fixes, args);
+  const projectId = requireProjectId();
+  guardSession(projectId, "context");
+  const chapter: number = args.chapter;
+  const roundNo: number = args.round;
+
+  const doc = getOwnerReview(projectId, chapter);
+  const round = doc?.rounds.find((r) => r.round === roundNo);
+  if (!doc || !round) throw new Error(`chapter ${chapter} has no owner review round ${roundNo}`);
+  if (round.status !== "changes_requested") {
+    throw new Error(`chapter ${chapter} round ${roundNo} isn't waiting for a revision (status: ${round.status})`);
+  }
+  const resolutions: { note: string; action: OwnerNoteAction; how: string }[] = args.resolutions;
+  for (const r of resolutions) {
+    if (!round.notes.some((n) => n.id === r.note)) {
+      throw new Error(`unknown note '${r.note}' in chapter ${chapter} round ${roundNo} (notes: ${round.notes.map((n) => n.id).join(", ") || "none"})`);
+    }
+  }
+  const now = nowIso();
+  for (const r of resolutions) {
+    const note = round.notes.find((n) => n.id === r.note)!;
+    note.resolution = { action: r.action, how: r.how.trim(), at: now };
+  }
+  round.fixes_at = now;
+  putOwnerReview(projectId, doc);
+  writeOwnerReview(doc);
+
+  const unresolved = round.notes.filter((n) => !n.resolution).map((n) => n.id);
+  return { ok: true, unresolved };
 }

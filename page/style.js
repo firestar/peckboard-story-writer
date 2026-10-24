@@ -453,6 +453,7 @@ button.sw-seg-opt:focus-visible { outline: none; box-shadow: var(--focus); }
 .sw-ch-tag { font-size: .6875rem; font-weight: 650; padding: 0 6px; line-height: 18px; border-radius: 5px; background: var(--warning-bg); color: var(--warning-text); border: 1px solid var(--warning-border); }
 .sw-note-chip { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: .75rem; color: var(--text2); font-variant-numeric: tabular-nums; }
 .sw-note-chip .sw-ico svg { width: 13px; height: 13px; }
+.sw-note-chip.ok { color: var(--success-text); font-weight: 600; }
 .sw-cell {
   width: 30px; height: 30px; border-radius: 7px; display: inline-grid; place-items: center; vertical-align: middle; cursor: pointer;
   border: 1px solid var(--border); background: var(--surface2); color: var(--text3); padding: 0;
@@ -735,6 +736,122 @@ button.sw-cr-tile:focus-visible { outline: none; box-shadow: var(--focus); }
 .sw-unex-item > .sw-spacer { display: none; }
 .sw-unex-kind { font-size: .6875rem; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; color: var(--text3); }
 
+/* owner review (SW-12): notes on the chapter text, rounds, decisions */
+.sw-gate-lines { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.sw-gate-round { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: .8125rem; font-weight: 550; color: var(--text2); }
+.sw-gate-round .sw-ico svg { width: 14px; height: 14px; }
+.sw-gate.redraft { background: var(--accent-subtle); border-color: var(--accent-muted); }
+.sw-gate.redraft .sw-gate-icon { color: var(--accent-text); border-color: var(--accent-muted); }
+.sw-gate.redraft .sw-kicker { color: var(--accent-text); }
+.sw-gate.redraft.failed { background: var(--danger-bg); border-color: var(--danger-border); }
+.sw-gate.redraft.failed .sw-gate-icon, .sw-gate.redraft.failed .sw-kicker { color: var(--danger-text); border-color: var(--danger-border); }
+.sw-gate-phase { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; font-size: .8125rem; font-weight: 550; color: var(--text); }
+.sw-gate-phase.failed { color: var(--danger-text); }
+.sw-gate-phase .sw-ico svg { width: 14px; height: 14px; }
+
+.sw-review-hint {
+  display: flex; align-items: flex-start; gap: 8px; max-width: 66ch; margin: 0 auto 16px; padding: 8px 12px;
+  border-radius: 8px; background: var(--accent-subtle); border: 1px solid var(--accent-muted); font-size: .8125rem; color: var(--text);
+}
+.sw-review-hint > .sw-ico { margin-top: 2px; color: var(--accent-text); }
+.sw-review-hint.redraft { background: var(--warning-bg); border-color: var(--warning-border); }
+.sw-review-hint.redraft > .sw-ico { color: var(--warning-text); }
+.sw-review-hint.closed { background: var(--surface2); border-color: var(--border); color: var(--text2); }
+.sw-review-hint.closed > .sw-ico { color: var(--text3); }
+
+.sw-prose .sw-block { position: relative; }
+.sw-prose.annotatable .sw-block { margin-left: -10px; margin-right: -10px; padding-left: 10px; padding-right: 10px; border-radius: 6px; cursor: text; transition: background-color .12s; }
+.sw-prose.annotatable hr.sw-block { margin: 2em auto; padding: 0; }
+.sw-prose.annotatable .sw-block:hover { background: var(--surface-hover); }
+.sw-prose.annotatable .sw-block:focus-visible { outline: none; box-shadow: var(--focus); }
+.sw-prose .sw-block.noted { background: var(--warning-bg); box-shadow: inset 3px 0 0 var(--warning); }
+.sw-prose .sw-block.sel { background: var(--accent-subtle); box-shadow: inset 3px 0 0 var(--accent); }
+.sw-pin {
+  position: absolute; top: 4px; right: -30px; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
+  display: grid; place-items: center; font: 650 .6875rem/1 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  background: var(--warning); color: #fff; font-variant-numeric: tabular-nums;
+}
+:root[data-theme="dark"] .sw-pin { color: #1a1d23; }
+
+.sw-inline-notes, .sw-note-list { list-style: none; margin: -4px 0 18px; padding: 0; display: flex; flex-direction: column; gap: 6px; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif; }
+.sw-note-list { margin: 10px 0 0; }
+.sw-note { border: 1px solid var(--border); border-left: 3px solid var(--warning); border-radius: 8px; background: var(--surface); padding: 8px 10px; }
+.sw-note.res-fixed { border-left-color: var(--success); }
+.sw-note.res-answered { border-left-color: var(--accent); }
+.sw-note.res-declined { border-left-color: var(--danger); }
+.sw-note-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: .75rem; min-height: 28px; }
+.sw-note-kind { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; color: var(--text); }
+.sw-note-kind .sw-ico svg { width: 14px; height: 14px; color: var(--warning-text); }
+.sw-note-lines { color: var(--text3); font-variant-numeric: tabular-nums; }
+.sw-note-quote { margin: 4px 0 0; padding: 1px 0 1px 9px; border-left: 3px solid var(--border-strong); font: .8125rem/1.55 Charter, "Iowan Old Style", Georgia, serif; color: var(--text2); }
+.sw-note-body { margin: 4px 0 0; font-size: .8125rem; white-space: pre-wrap; color: var(--text); }
+.sw-note-edit { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.sw-note-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.sw-res { margin-top: 6px; padding: 6px 9px; border-radius: 8px; font-size: .8125rem; border: 1px solid var(--border); background: var(--surface2); }
+.sw-res p { margin: 2px 0 0; white-space: pre-wrap; color: var(--text); }
+.sw-res-k { font-size: .6875rem; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; }
+.sw-res.fixed { background: var(--success-bg); border-color: var(--success-border); }
+.sw-res.fixed .sw-res-k { color: var(--success-text); }
+.sw-res.answered { background: var(--accent-subtle); border-color: var(--accent-muted); }
+.sw-res.answered .sw-res-k { color: var(--accent-text); }
+.sw-res.declined { background: var(--danger-bg); border-color: var(--danger-border); }
+.sw-res.declined .sw-res-k { color: var(--danger-text); }
+
+.sw-pop {
+  position: fixed; z-index: 60; width: 340px; max-width: calc(100vw - 16px); padding: 10px 12px 12px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: 0 14px 36px rgba(0, 0, 0, .2);
+}
+.sw-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.sw-pop-head .sw-icon-btn { width: 28px; height: 28px; }
+.sw-pop-quote {
+  margin: 0 0 8px; padding: 1px 0 1px 9px; border-left: 3px solid var(--accent-muted); max-height: 4.8em; overflow: hidden;
+  font: .8125rem/1.6 Charter, "Iowan Old Style", Georgia, serif; color: var(--text2);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}
+.sw-pop-verbs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
+.sw-pop-verb {
+  display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 9px; border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--text); cursor: pointer; text-align: left; font-size: .8125rem; font-weight: 550;
+}
+.sw-pop-verb:hover { background: var(--surface-hover); border-color: var(--border); }
+.sw-pop-verb:focus-visible { outline: none; box-shadow: var(--focus); }
+.sw-pop-verb .sw-ico svg { width: 16px; height: 16px; color: var(--text2); }
+.sw-pop-editor { display: flex; flex-direction: column; gap: 6px; }
+.sw-pop-editor .sw-label { align-items: center; }
+.sw-pop-editor .sw-label .sw-ico svg { width: 14px; height: 14px; }
+.sw-pop-error { margin: 0; font-size: .8125rem; }
+.sw-pop-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+.sw-review-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sw-review-count { display: inline-flex; align-items: center; gap: 7px; font-size: .8125rem; color: var(--text2); }
+.sw-review-count strong { color: var(--text); }
+.sw-review-count .sw-ico { color: var(--accent-text); }
+.sw-review-status { display: inline-flex; align-items: center; gap: 8px; font-size: .8125rem; color: var(--text); max-width: 60ch; }
+.sw-review-status.failed { color: var(--danger-text); }
+.sw-check { display: inline-flex; align-items: flex-start; gap: 8px; font-size: .8125rem; color: var(--text2); cursor: pointer; }
+.sw-check input { margin: 2px 0 0; accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
+
+.sw-round-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.sw-round-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
+.sw-round-card.open { border-color: var(--accent-muted); box-shadow: inset 3px 0 0 var(--accent); }
+.sw-round-card.changes_requested { border-color: var(--warning-border); box-shadow: inset 3px 0 0 var(--warning); }
+.sw-round-card.approved { box-shadow: inset 3px 0 0 var(--success); }
+.sw-round-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .8125rem; }
+.sw-round-sum { margin: 6px 0 0; font-size: .8125rem; color: var(--text2); }
+.sw-round-unit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--surface2); font-size: .8125rem; }
+.sw-round-unit.failed { background: var(--danger-bg); color: var(--danger-text); }
+.sw-round-overall { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--surface2); border: 1px solid var(--border); }
+.sw-round-overall p { margin: 3px 0 4px; font-size: .8125rem; white-space: pre-wrap; }
+
+@media (max-width: 640px) {
+  .sw-pop {
+    left: 0 !important; right: 0; top: auto !important; bottom: 0; width: auto; max-width: none;
+    border-radius: 14px 14px 0 0; padding: 12px 14px calc(14px + env(safe-area-inset-bottom));
+  }
+  .sw-pop-verb { min-height: 44px; }
+  .sw-pin { right: 4px; top: -8px; }
+  .sw-prose.annotatable .sw-block { margin-left: -6px; margin-right: -6px; padding-left: 6px; padding-right: 6px; }
+}
 @media (max-width: 820px) {
   .sw-app { padding: 14px 14px 40px; }
   .sw-wiz { grid-template-columns: 1fr; }

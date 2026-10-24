@@ -123,10 +123,12 @@ function finishColdRead(cards: ReturnType<typeof fakeCards>, chapter: number, it
 
 let cards: ReturnType<typeof fakeCards>;
 let docs: Record<string, unknown>;
+let files: Record<string, string>;
 
 beforeEach(() => {
   cards = fakeCards();
   const fw = fileWrites();
+  files = fw.files;
   const ds = docStore();
   docs = ds.docs;
   setHandlers({
@@ -221,7 +223,11 @@ describe("pipeline engine: owner review gate", () => {
 
     const revisionCard = open(cards.cards).find((c) => c.title.toLowerCase().includes("revise"))!;
     expect(revisionCard).toBeTruthy();
-    finishCard(cards, revisionCard.id);
+    // The writer redrafts; the redraft is cold-read again before the owner
+    // can approve it (SW-12).
+    submitAndFinish(cards, revisionCard.id, 1);
+    expect(authed("POST", "/pipeline/approve").status).toBe(409);
+    finishColdRead(cards, 1);
 
     expect(authed("POST", "/pipeline/approve").status).toBe(200);
   });
@@ -247,7 +253,7 @@ describe("pipeline engine: owner feedback revision loop", () => {
     expect(revisionCard).toBeTruthy();
     expect(revisionCard.description).toContain("Too rushed.");
 
-    finishCard(cards, revisionCard.id);
+    submitAndFinish(cards, revisionCard.id, 1);
     expect(authed("GET", "/state").body.engine.stage).toBe("pilot_review"); // still waiting for approval
   });
 
@@ -262,6 +268,240 @@ describe("pipeline engine: owner feedback revision loop", () => {
     finishColdRead(cards, 1);
 
     expect(authed("POST", "/pipeline/feedback", { chapter: 7, text: "no such chapter" }).status).toBe(400);
+  });
+});
+
+const PILOT_TEXT = [
+  "# Chapter 1",
+  "",
+  "Rain on the tin roof. Jun counted the drops.",
+  "",
+  "Mara forgave him before he finished the sentence.",
+  "",
+  "The phone rang. It was a phone, and phones ring when someone calls.",
+  "",
+  "They left at dawn.",
+].join("\n");
+
+/// Records -> pilot (with PILOT_TEXT) -> its cold read (with `coldItems`)
+/// -> pilot_review, the owner gate.
+function toPilotReview(coldItems: string[] = []): void {
+  setupBrief();
+  authed("POST", "/pipeline/start");
+  finishCard(cards, cards.cards[0].id);
+  const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
+  invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT });
+  finishCard(cards, pilotCard.id);
+  finishColdRead(cards, 1, coldItems);
+  expect(authed("GET", "/state").body.engine.stage).toBe("pilot_review");
+}
+
+function note(chapter: number, body: any): { status: number; body: any } {
+  return authed("POST", "/review/note", { chapter, ...body });
+}
+
+function ownerReview(chapter: number): any {
+  return (authed("GET", "/state").body.owner_reviews as any[]).find((d) => d.chapter === chapter) ?? null;
+}
+
+describe("owner review rounds (SW-12)", () => {
+  it("pilot: notes -> request changes -> revision card with every note -> resolutions -> cold read again -> round 2 -> approve", () => {
+    toPilotReview(["Who is Mara?"]);
+
+    const n1 = note(1, { kind: "wrong", start_line: 5, end_line: 5, quote: "Mara forgave him before he finished the sentence.", body: "Too fast — she stays cold." });
+    expect(n1.status).toBe(200);
+    expect(n1.body).toMatchObject({ ok: true, round: 1, note: { id: "n1", kind: "wrong", start_line: 5, end_line: 5, revision: 1, resolution: null } });
+    expect(note(1, { kind: "shorten", start_line: 7 }).body.note.id).toBe("n2"); // shorten needs no text
+    expect(note(1, { kind: "comment", start_line: 3 }).status).toBe(400); // a comment does
+    expect(note(1, { kind: "nope", start_line: 3, body: "x" }).status).toBe(400);
+    expect(note(1, { kind: "expand", start_line: 99 }).body.note).toMatchObject({ start_line: 9, end_line: 9 }); // clamped to the text
+
+    expect(authed("POST", "/review/note/update", { chapter: 1, id: "n1", body: "Far too fast — she stays cold all chapter." }).body.note.body).toBe(
+      "Far too fast — she stays cold all chapter.",
+    );
+    expect(authed("POST", "/review/note/delete", { chapter: 1, id: "n3" }).body.ok).toBe(true);
+    expect(authed("POST", "/review/note/delete", { chapter: 1, id: "n9" }).status).toBe(400);
+    expect(note(1, { kind: "suggest", start_line: 9, quote: "They left at dawn.", body: "They left before the rain stopped." }).body.note.id).toBe("n4");
+
+    let review = ownerReview(1);
+    expect(review.rounds).toHaveLength(1);
+    expect(review.rounds[0]).toMatchObject({ round: 1, status: "open", chapter_revision: 1 });
+    expect(review.rounds[0].notes.map((n: any) => n.id)).toEqual(["n1", "n2", "n4"]);
+
+    // Nothing to request without a note or an overall note; bad decisions refused.
+    expect(authed("POST", "/review/decide", { chapter: 1, decision: "maybe" }).status).toBe(400);
+    const decided = authed("POST", "/review/decide", { chapter: 1, decision: "changes", summary: "Keep Mara cold.", add_to_rules: false });
+    expect(decided.body).toMatchObject({ ok: true, round: 1 });
+
+    const state = authed("GET", "/state").body;
+    review = state.owner_reviews.find((d: any) => d.chapter === 1);
+    expect(review.rounds[0]).toMatchObject({ status: "changes_requested", decided_revision: 1, summary: "Keep Mara cold.", summary_to_rules: false });
+    expect(state.brief.elements.style_rules).not.toContain("Keep Mara cold.");
+    const fb = state.feedback[state.feedback.length - 1];
+    expect(fb).toMatchObject({ source: "owner", chapter: 1, chapter_only: true, round: 1, appended_to_rules: false });
+    expect(fb.text).toContain("n1 Mark wrong, line 5");
+    expect(fb.text).toContain("Far too fast");
+    expect(fb.text).toContain("Overall: Keep Mara cold.");
+
+    // One revision card carrying every note, anchored to lines and quotes.
+    const revisionCard = open(cards.cards).find((c) => c.title.includes("owner review"))!;
+    expect(revisionCard.title).toBe("Revise pilot chapter 1 from owner review — round 1");
+    expect(revisionCard.model).toBe("claude:writer@acct");
+    for (const s of ["**n1** · Mark wrong · line 5", "> Mara forgave him", "Far too fast", "**n2** · Shorten · line 7", "**n4** · Suggest edit · line 9", "Keep Mara cold."]) {
+      expect(revisionCard.description).toContain(s);
+    }
+    expect(revisionCard.description).toContain("story_submit_owner_review_fixes {chapter: 1, round: 1");
+    expect(revisionCard.description).toContain("(n1, n2, n4)");
+    expect(revisionCard.description).toContain("Address every note");
+
+    // Locked while the redraft runs.
+    expect(note(1, { kind: "comment", start_line: 3, body: "x" }).status).toBe(409);
+    expect(authed("POST", "/pipeline/approve").status).toBe(409);
+    expect(authed("POST", "/review/decide", { chapter: 1, decision: "approve" }).status).toBe(409);
+    expect(invoke("story_get_brief").owner_reviews).toMatchObject([{ chapter: 1, round: 1, revision: 1, summary: "Keep Mara cold." }]);
+
+    // Finishing without recording every note doesn't count.
+    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT.replace("Mara forgave him", "Mara did not look at him") });
+    expect(invoke("story_submit_owner_review_fixes", { chapter: 1, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "Mara stays silent." }] })).toEqual({
+      ok: true,
+      unresolved: ["n2", "n4"],
+    });
+    finishCard(cards, revisionCard.id);
+    let unit = authed("GET", "/state").body.engine.units["revision:owner:1:1"];
+    expect(unit.status).toBe("failed");
+    expect(unit.note).toContain("n2, n4");
+
+    expect(authed("POST", "/pipeline/retry", { unit: "revision:owner:1:1" }).body.retried).toEqual(["revision:owner:1:1"]);
+    const retryCard = open(cards.cards).find((c) => c.title.includes("owner review"))!;
+    expect(retryCard.id).not.toBe(revisionCard.id);
+    expect(retryCard.description).toContain("Already recorded: fixed — Mara stays silent.");
+    expect(invoke("story_submit_owner_review_fixes", { chapter: 1, round: 1, resolutions: [{ note: "n7", action: "fixed", how: "x" }] }).error).toContain("unknown note 'n7'");
+    expect(
+      invoke("story_submit_owner_review_fixes", {
+        chapter: 1,
+        round: 1,
+        resolutions: [
+          { note: "n2", action: "fixed", how: "Cut the phone line." },
+          { note: "n4", action: "declined", how: "The records have them leave at dawn (chapter 2 opens at sunrise)." },
+        ],
+      }).unresolved,
+    ).toEqual([]);
+    finishCard(cards, retryCard.id);
+    unit = authed("GET", "/state").body.engine.units["revision:owner:1:1"];
+    expect(unit).toMatchObject({ status: "done", cold_reset: true });
+
+    // The redraft goes through a FRESH cold read (and a fresh fix card for
+    // its items) before the owner sees it again.
+    expect(authed("GET", "/state").body.engine.units["cold_read:1"]).toMatchObject({ status: "open", attempt: 2 });
+    expect(authed("POST", "/pipeline/approve").status).toBe(409);
+    finishColdRead(cards, 1, ["Why is Mara cold?"]);
+    const st = authed("GET", "/state").body;
+    expect(st.engine.units["cold_read_fix:1"]).toMatchObject({ status: "done", attempt: 2 });
+    expect(st.engine.units["revision:owner:1:1"].settled).toBe(true);
+
+    review = st.owner_reviews.find((d: any) => d.chapter === 1);
+    expect(review.rounds.map((r: any) => [r.round, r.status])).toEqual([
+      [1, "revised"],
+      [2, "open"],
+    ]);
+    expect(review.rounds[0].revised_revision).toBe(review.rounds[1].chapter_revision);
+    expect(review.rounds[0].notes.map((n: any) => n.resolution.action)).toEqual(["fixed", "fixed", "declined"]);
+
+    // Round 2: approve passes the gate, same as /pipeline/approve.
+    expect(authed("POST", "/review/decide", { chapter: 1, decision: "approve" }).body).toMatchObject({ ok: true, round: 2 });
+    const after = authed("GET", "/state").body;
+    expect(after.engine.stage).toBe("chapters");
+    expect(after.owner_reviews[0].rounds[1].status).toBe("approved");
+  });
+
+  it("mirrors the round, notes and resolutions to story/reviews/chapter-NN-owner.md", () => {
+    toPilotReview();
+    note(1, { kind: "wrong", start_line: 5, quote: "Mara forgave him", body: "Too fast." });
+    authed("POST", "/review/decide", { chapter: 1, decision: "changes" });
+    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT + "\n" });
+    invoke("story_submit_owner_review_fixes", { chapter: 1, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "She stays silent." }] });
+    const file = files["story/reviews/chapter-01-owner.md"];
+    expect(file).toContain("## Round 1 — changes requested");
+    expect(file).toContain("### n1 · Mark wrong · line 5");
+    expect(file).toContain("> Mara forgave him");
+    expect(file).toContain("Resolution (fixed): She stays silent.");
+  });
+
+  it("approving the pilot without notes records round 1 as approved", () => {
+    toPilotReview();
+    expect(authed("POST", "/pipeline/approve").body).toMatchObject({ ok: true, round: 1 });
+    expect(ownerReview(1).rounds).toMatchObject([{ round: 1, status: "approved", notes: [], decided_revision: 1 }]);
+  });
+
+  it("the free-text fallback is an overall note: added to the rules, same redraft + cold read loop", () => {
+    toPilotReview();
+    expect(authed("POST", "/pipeline/feedback", { text: "Less weather." }).body.ok).toBe(true);
+    const st = authed("GET", "/state").body;
+    expect(st.brief.elements.style_rules).toContain("Less weather.");
+    expect(st.owner_reviews[0].rounds[0]).toMatchObject({ status: "changes_requested", summary: "Less weather.", summary_to_rules: true, notes: [] });
+    const card = open(cards.cards).find((c) => c.title.includes("owner review"))!;
+    expect(card.description).toContain("no line notes");
+    // A summary-only round needs a new draft, nothing else.
+    finishCard(cards, card.id);
+    expect(authed("GET", "/state").body.engine.units["revision:owner:1:1"].note).toContain("without a new draft");
+  });
+
+  it("other chapters: reviewable only once their cold read cleared; changes re-run the chain in order before the review stage", () => {
+    toPilotReview();
+    authed("POST", "/pipeline/approve");
+    const ch2 = cards.cards.find((c) => c.title === "Chapter 2")!;
+    const ch3 = cards.cards.find((c) => c.title === "Chapter 3")!;
+
+    expect(note(2, { kind: "comment", start_line: 1, body: "x" }).status).toBe(400); // no text yet
+    submitAndFinish(cards, ch2.id, 2);
+    expect(note(2, { kind: "comment", start_line: 1, body: "x" }).status).toBe(409); // cold read first (C1)
+    finishColdRead(cards, 2);
+    expect(note(2, { kind: "comment", start_line: 3, quote: "Draft text.", body: "Show the harbour." }).body.note.id).toBe("n1");
+    submitAndFinish(cards, ch3.id, 3);
+    finishColdRead(cards, 3);
+    expect(authed("GET", "/state").body.engine.stage).toBe("review");
+
+    // Review stage: chapter 2's changes still loop through a fresh cold read.
+    authed("POST", "/review/decide", { chapter: 2, decision: "changes" });
+    const card = open(cards.cards).find((c) => c.title === "Revise chapter 2 from owner review — round 1")!;
+    expect(card).toBeTruthy();
+    invoke("story_submit_chapter", { chapter: 2, markdown: "# Chapter 2\n\nThe harbour, grey." });
+    invoke("story_submit_owner_review_fixes", { chapter: 2, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "Opened on the harbour." }] });
+    finishCard(cards, card.id);
+    finishColdRead(cards, 2);
+    expect(ownerReview(2).rounds.map((r: any) => r.status)).toEqual(["revised", "open"]);
+    expect(authed("POST", "/review/decide", { chapter: 2, decision: "approve" }).body).toMatchObject({ ok: true, round: 2 });
+    expect(authed("POST", "/review/decide", { chapter: 2, decision: "approve" }).body).toMatchObject({ ok: true, round: 2 }); // idempotent
+    expect(ownerReview(2).rounds[1].status).toBe("approved");
+  });
+
+  it("holds the chapter stage while an owner redraft is pending", () => {
+    toPilotReview();
+    authed("POST", "/pipeline/approve");
+    const ch2 = cards.cards.find((c) => c.title === "Chapter 2")!;
+    const ch3 = cards.cards.find((c) => c.title === "Chapter 3")!;
+    submitAndFinish(cards, ch2.id, 2);
+    finishColdRead(cards, 2);
+    submitAndFinish(cards, ch3.id, 3);
+    note(2, { kind: "expand", start_line: 3 });
+    authed("POST", "/review/decide", { chapter: 2, decision: "changes" });
+    finishColdRead(cards, 3); // chapter 3's chain clears, but chapter 2 is being redrafted
+    expect(authed("GET", "/state").body.engine.stage).toBe("chapters");
+
+    const card = open(cards.cards).find((c) => c.title.startsWith("Revise chapter 2"))!;
+    invoke("story_submit_chapter", { chapter: 2, markdown: "# Chapter 2\n\nMore." });
+    invoke("story_submit_owner_review_fixes", { chapter: 2, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "Added the harbour." }] });
+    finishCard(cards, card.id);
+    expect(authed("GET", "/state").body.engine.stage).toBe("chapters"); // its fresh cold read first
+    finishColdRead(cards, 2);
+    expect(authed("GET", "/state").body.engine.stage).toBe("review");
+  });
+
+  it("refuses notes before the owner gate and without a chapter", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    expect(note(1, { kind: "comment", start_line: 1, body: "x" }).status).toBe(409);
+    expect(authed("POST", "/review/note", { kind: "comment", start_line: 1, body: "x" }).status).toBe(400);
   });
 });
 

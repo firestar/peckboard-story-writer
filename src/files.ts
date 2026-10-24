@@ -4,7 +4,19 @@
 // src/tools.ts handler — never from an http route.
 
 import { writeFile } from "./host";
-import { Brief, ChapterDoc, CharacterSheet, COLD_READ_CATEGORY_LABELS, ColdReadDoc, PipelineState, Recap, Records, ReviewDoc } from "./types";
+import {
+  Brief,
+  ChapterDoc,
+  CharacterSheet,
+  COLD_READ_CATEGORY_LABELS,
+  ColdReadDoc,
+  OWNER_NOTE_KIND_LABELS,
+  OwnerReviewDoc,
+  PipelineState,
+  Recap,
+  Records,
+  ReviewDoc,
+} from "./types";
 
 function storyPath(rel: string): string {
   return `story/${rel}`;
@@ -129,4 +141,30 @@ export function writeColdRead(doc: ColdReadDoc): void {
     for (const c of doc.characters) lines.push(`- ${c.name}: ${c.said}`);
   }
   writeFile(storyPath(`cold-reads/ch-${String(doc.chapter).padStart(2, "0")}.md`), lines.join("\n"));
+}
+
+const ROUND_STATUS_LABELS: Record<string, string> = {
+  open: "open — the owner is reviewing",
+  changes_requested: "changes requested — being redrafted",
+  revised: "revised — the redraft is the next round",
+  approved: "approved",
+};
+
+/// Mirror one chapter's owner review rounds (SW-12) to
+/// `story/reviews/chapter-NN-owner.md`: every note with its lines, quote
+/// and the writer's recorded resolution.
+export function writeOwnerReview(doc: OwnerReviewDoc): void {
+  const lines = [`# Chapter ${doc.chapter} — owner review`, ""];
+  for (const r of doc.rounds) {
+    lines.push(`## Round ${r.round} — ${ROUND_STATUS_LABELS[r.status] ?? r.status}`, "", `Draft revision ${r.decided_revision ?? r.chapter_revision} · ${r.notes.length} note(s).`, "");
+    for (const n of r.notes) {
+      const where = n.end_line > n.start_line ? `lines ${n.start_line}–${n.end_line}` : `line ${n.start_line}`;
+      lines.push(`### ${n.id} · ${OWNER_NOTE_KIND_LABELS[n.kind] ?? n.kind} · ${where}`, "");
+      if (n.quote) lines.push(`> ${n.quote.replace(/\n+/g, " ")}`, "");
+      if (n.body) lines.push(n.body, "");
+      lines.push(n.resolution ? `Resolution (${n.resolution.action}): ${n.resolution.how}` : "Resolution: _not yet recorded_", "");
+    }
+    if (r.summary) lines.push("### Overall note", "", r.summary, "");
+  }
+  writeFile(storyPath(`reviews/chapter-${String(doc.chapter).padStart(2, "0")}-owner.md`), lines.join("\n"));
 }

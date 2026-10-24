@@ -146,7 +146,7 @@ describe("manifest", () => {
     });
   });
 
-  it("declares the nine worker tools, each worker_allowed and name-valid", () => {
+  it("declares the ten worker tools, each worker_allowed and name-valid", () => {
     const names = manifest.mcp_tools.map((t: any) => t.name);
     expect(names).toEqual([
       "story_get_brief",
@@ -158,6 +158,7 @@ describe("manifest", () => {
       "story_cold_read_get_text",
       "story_submit_cold_read",
       "story_submit_cold_read_fixes",
+      "story_submit_owner_review_fixes",
     ]);
     for (const tool of manifest.mcp_tools) {
       expect(tool.name).toMatch(/^[a-z0-9_]{1,64}$/);
@@ -170,6 +171,19 @@ describe("manifest", () => {
   it("requires markdown/chapter on story_submit_chapter", () => {
     const tool = manifest.mcp_tools.find((t: any) => t.name === "story_submit_chapter");
     expect(tool.input_schema.required).toEqual(["chapter", "markdown"]);
+
+  });
+  it("requires one action per owner note on story_submit_owner_review_fixes", () => {
+    const tool = manifest.mcp_tools.find((t: any) => t.name === "story_submit_owner_review_fixes");
+    expect(tool.input_schema.required).toEqual(["chapter", "round", "resolutions"]);
+    expect(tool.input_schema.properties.resolutions.items.properties.action.enum).toEqual(["fixed", "answered", "declined"]);
+    expect(tool.input_schema.properties.resolutions.items.required).toEqual(["note", "action", "how"]);
+  });
+
+  it("declares the owner review routes", () => {
+    for (const route of ["note", "note/update", "note/delete", "decide"]) {
+      expect(manifest.ui_routes).toContain(`POST /api/plugin-ui/story-writer/review/${route}`);
+    }
   });
 
   it("requires a verdict enum on story_report_review", () => {

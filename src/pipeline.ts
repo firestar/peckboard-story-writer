@@ -39,6 +39,8 @@ import {
   getEngine,
   getFeedback,
   getPipelineState,
+  getOwnerReview,
+  putOwnerReview,
   listChapters,
   getEngineIndex,
   putEngineIndex,
@@ -50,17 +52,25 @@ import {
 } from "./docs";
 import { PromptBrief, PromptFeedback, draftKey, renderCard } from "./prompts";
 import { renderColdReadCard, renderColdReadFixCard } from "./prompts/coldRead";
+import { renderOwnerReviewCard } from "./prompts/ownerReview";
+import { buildNote, cardNotes, editNote, feedbackText, findRound, isOwnerRevisionId, latestRound, ownerRevisionId, revisionProblem } from "./ownerReview";
 import {
   DEFAULT_WRITER_MODEL,
   COLD_READ_CATEGORY_LABELS,
   Brief,
   CardRef,
+  ChapterDoc,
   ELEMENT_KEYS,
   ElementKey,
   EngineState,
   Feedback,
-  MAX_REVIEW_ROUNDS,
   REVIEW_PASSES,
+  MAX_REVIEW_ROUNDS,
+  MAX_OWNER_NOTES_PER_ROUND,
+  OwnerNote,
+  MAX_OWNER_SUMMARY_CHARS,
+  OwnerReviewDoc,
+  OwnerReviewRound,
   ReviewCursor,
   ReviewPass,
   ReviewRound,
@@ -125,7 +135,7 @@ function overridesOf(brief: Brief | null): Record<string, string> {
   return brief?.lesson_overrides ?? {};
 }
 function toPromptFeedback(feedback: Feedback[]): PromptFeedback[] {
-  return feedback.map((f) => ({ source: f.source, chapter: f.chapter, text: f.text, at: f.at }));
+  return feedback.map((f) => ({ source: f.source, chapter: f.chapter, text: f.text, at: f.at, chapter_only: f.chapter_only }));
 }
 
 function chapterCountOf(ctx: Ctx): number {
@@ -144,6 +154,8 @@ interface UnitSpec {
   blocked?: boolean;
   blockReason?: string;
   feedbackText?: string;
+  /// Owner-review revision: the round whose notes the card addresses.
+  ownerRound?: number;
 }
 
 function unitMarker(id: string, attempt: number): string {
@@ -213,15 +225,17 @@ function materialize(ctx: Ctx, unit: Unit, spec: UnitSpec): void {
             items: coldReadItemTexts(ctx.projectId, spec.chapter as number),
             characters: coldReadCharacterTexts(ctx.projectId, spec.chapter as number),
           })
-        : renderCard(spec.kind, {
-            brief: toPromptBrief(ctx.brief),
-            feedback: toPromptFeedback(ctx.feedback),
-            overrides: overridesOf(ctx.brief),
-            chapter: spec.chapter,
-            pass: spec.pass,
-            element: spec.element,
-            feedbackText: spec.feedbackText,
-          });
+        : spec.ownerRound !== undefined
+          ? ownerRevisionCard(ctx, spec.chapter as number, spec.ownerRound)
+          : renderCard(spec.kind, {
+              brief: toPromptBrief(ctx.brief),
+              feedback: toPromptFeedback(ctx.feedback),
+              overrides: overridesOf(ctx.brief),
+              chapter: spec.chapter,
+              pass: spec.pass,
+              element: spec.element,
+              feedbackText: spec.feedbackText,
+            });
   const description = `${rendered.description}\n\n${marker}`;
   const model = modelFor(rendered.role);
   const input: CreateCardInput = {
@@ -347,6 +361,15 @@ function failUnit(unit: Unit, note: string): void {
 }
 
 function completeUnit(ctx: Ctx, unit: Unit): void {
+  if (isOwnerRevisionId(unit.id)) {
+    const chapter = unit.chapter as number;
+    const round = findRound(getOwnerReview(ctx.projectId, chapter), unit.round as number);
+    const problem = round ? revisionProblem(chapter, round, getChapter(ctx.projectId, chapter)?.revision ?? null) : null;
+    if (problem) {
+      failUnit(unit, problem);
+      return;
+    }
+  }
   if (unit.kind === "cold_read") {
     const chapter = unit.chapter as number;
     const doc = getColdRead(ctx.projectId, chapter);
@@ -412,6 +435,90 @@ function materializeFeedbackRevisions(ctx: Ctx): void {
     const text = fb?.text ?? "Owner feedback — see story_get_brief.";
     materialize(ctx, unit, { id: unit.id, kind: "revision", chapter: unit.chapter, priority: 1, feedbackText: text });
   }
+}
+
+/// The owner-review revision card for one round: every note of the round,
+/// anchored to its lines and quote (src/prompts/ownerReview.ts).
+function ownerRevisionCard(ctx: Ctx, chapter: number, roundNo: number): { title: string; description: string; role: "writer" | "reviewer" } {
+  const round = findRound(getOwnerReview(ctx.projectId, chapter), roundNo);
+  return renderOwnerReviewCard({
+    chapter,
+    round: roundNo,
+    revision: round?.decided_revision ?? round?.chapter_revision ?? 0,
+    brief: toPromptBrief(ctx.brief),
+    overrides: overridesOf(ctx.brief),
+    notes: round ? cardNotes(round) : [],
+    summary: round?.summary,
+  });
+}
+
+/// Whether one chapter's cold-read chain has cleared, from the engine's
+/// units and the stored report — without creating any card.
+function coldReadCleared(projectId: string, units: Record<string, Unit>, chapter: number): boolean {
+  const read = units[`cold_read:${chapter}`];
+  if (!read || read.status !== "done") return false;
+  const doc = getColdRead(projectId, chapter);
+  if (!doc || doc.items.length === 0) return true;
+  const fix = units[`cold_read_fix:${chapter}`];
+  return !!fix && fix.status === "done" && doc.items.every((i) => i.fix !== null);
+}
+
+/// An owner review round whose changes are still being made (the revision
+/// card, or the redraft's cold read) — the chapter can't move on yet.
+function ownerRevisionPending(ctx: Ctx, chapter?: number): boolean {
+  return Object.values(ctx.engine.units).some((u) => isOwnerRevisionId(u.id) && !u.settled && u.status !== "failed" && (chapter === undefined || u.chapter === chapter));
+}
+
+/// Drive every owner-review revision (SW-12): materialize its card; once
+/// the writer's redraft is in, re-run the chapter's cold read (C1) and
+/// fixes (C2) on it; once that clears, close the round as revised and open
+/// the next one on the new draft, so it goes back to the owner.
+///
+/// The chain is driven here for the pilot and once the chapter stage is
+/// over; during "chapters", advanceChapters drives chapters 2..N in order
+/// (C1: chapter N is cold-read only after 1..N−1 cleared) and this only
+/// watches for the chain to clear.
+function advanceOwnerReviews(ctx: Ctx): void {
+  for (const unit of Object.values(ctx.engine.units)) {
+    if (!isOwnerRevisionId(unit.id) || unit.settled) continue;
+    if (!hasBudget(ctx.budget)) return;
+    const chapter = unit.chapter as number;
+    if (unit.status === "open") {
+      if (unit.card_id === null) materialize(ctx, unit, { id: unit.id, kind: "revision", chapter, priority: 1, ownerRound: unit.round });
+      continue;
+    }
+    if (unit.status !== "done") continue; // failed: waits for a retry
+    if (!unit.cold_reset) {
+      if (ctx.engine.units[`cold_read:${chapter}`]) resetUnit(ctx, `cold_read:${chapter}`);
+      unit.cold_reset = true;
+      unit.updated_at = nowIso();
+      ctx.dirty = true;
+    }
+    const drive = chapter === 1 || STAGES.indexOf(ctx.engine.stage) > STAGES.indexOf("chapters");
+    const cleared = drive ? advanceColdReadChain(ctx, chapter) : coldReadCleared(ctx.projectId, ctx.engine.units, chapter);
+    if (!cleared) continue;
+    openNextRound(ctx.projectId, chapter, unit.round as number);
+    unit.settled = true;
+    unit.updated_at = nowIso();
+    ctx.dirty = true;
+  }
+}
+
+/// The redraft cleared its cold read: the round it answered is revised and
+/// the next round opens on the new draft (the owner's next review).
+function openNextRound(projectId: string, chapter: number, roundNo: number): void {
+  const doc = getOwnerReview(projectId, chapter);
+  const round = findRound(doc, roundNo);
+  if (!doc || !round || round.status !== "changes_requested") return;
+  const revision = getChapter(projectId, chapter)?.revision ?? round.chapter_revision;
+  const now = nowIso();
+  round.status = "revised";
+  round.revised_at = now;
+  round.revised_revision = revision;
+  if (!doc.rounds.some((r) => r.round > roundNo)) {
+    doc.rounds.push({ round: roundNo + 1, chapter_revision: revision, status: "open", notes: [], opened_at: now });
+  }
+  putOwnerReview(projectId, doc);
 }
 
 // ── Stage advance ────────────────────────────────────────────────────────
@@ -496,12 +603,13 @@ function advanceChapters(ctx: Ctx): boolean {
   let priorCleared = true;
   for (let i = 2; i <= n; i++) {
     const unit = ensureUnit(ctx, { id: `chapter:${i}`, kind: "chapter", chapter: i, priority: 2, blocked: false });
-    const cleared = priorCleared && unit.status === "done" && advanceColdReadChain(ctx, i);
+    const cleared: boolean = priorCleared && unit.status === "done" && advanceColdReadChain(ctx, i);
     if (!cleared) allDone = false;
     priorCleared = cleared;
   }
   if (!allDone) return false;
   if (Object.values(ctx.engine.units).some((u) => u.kind === "revision" && u.status === "open")) return false;
+  if (ownerRevisionPending(ctx)) return false;
   ctx.engine.stage = "review";
   for (let i = 1; i <= n; i++) {
     ctx.engine.cursors[String(i)] = { chapter: i, pass_index: 0, round: 1, waiting: "review" };
@@ -523,7 +631,12 @@ function advanceColdReadChain(ctx: Ctx, chapter: number): boolean {
   const doc = getColdRead(ctx.projectId, chapter);
   if (!doc || doc.items.length === 0) return true;
 
-  const fixUnit = ensureUnit(ctx, { id: `cold_read_fix:${chapter}`, kind: "cold_read_fix", chapter, priority: 1 });
+  // A fresh report after an earlier fix (an owner-review redraft re-runs the
+  // cold read) needs a fresh fix card: the old one fixed the old report.
+  const fixId = `cold_read_fix:${chapter}`;
+  const prior = ctx.engine.units[fixId];
+  if (prior && prior.status === "done" && doc.items.some((i) => i.fix === null)) resetUnit(ctx, fixId);
+  const fixUnit = ensureUnit(ctx, { id: fixId, kind: "cold_read_fix", chapter, priority: 1 });
   return fixUnit.status === "done";
 }
 
@@ -694,6 +807,7 @@ export function runEngine(projectId: string, budget: Budget = newBudget(), trigg
     if (trigger.event) reconcileEvent(ctx, trigger.event.card_id, trigger.event.new_step);
     if (trigger.sweep) reconcileSweep(ctx);
     materializeFeedbackRevisions(ctx);
+    advanceOwnerReviews(ctx);
     let progressed = true;
     while (progressed && hasBudget(ctx.budget)) {
       progressed = advanceStage(ctx);
@@ -847,15 +961,20 @@ export function requestStart(projectId: string): { ok: true } {
 /// Owner approves the pilot: unblocks the queued parallel chapter cards
 /// (re-rendering their description so any brief/rule edits made while
 /// waiting are picked up) and advances to "chapters". Refused while a
-/// pilot revision from feedback is still open — the owner should see the
-/// revised pilot before committing the rest of the book to it.
-export function requestApprove(projectId: string): { ok: true } {
+/// pilot revision from feedback is still open, or while the redraft from
+/// the owner's last review is still being cold-read — the owner should see
+/// the revised pilot before committing the rest of the book to it. Closes
+/// the pilot's open review round as approved.
+export function requestApprove(projectId: string): { ok: true; round: number } {
   const engine = getEngine(projectId);
   if (engine.stage !== "pilot_review") {
     throw new PipelineConflict(`cannot approve from stage '${engine.stage}' (must be pilot_review)`);
   }
   const openPilotRevision = Object.values(engine.units).some((u) => u.kind === "revision" && u.chapter === 1 && u.status === "open");
   if (openPilotRevision) throw new PipelineConflict("a pilot revision is still open — wait for it to finish before approving");
+  if (latestRound(getOwnerReview(projectId, 1))?.status === "changes_requested") {
+    throw new PipelineConflict("the pilot is being redrafted from your review — approve the new draft once its cold read is done");
+  }
 
   engine.approved = true;
   engine.stage = "chapters";
@@ -879,36 +998,170 @@ export function requestApprove(projectId: string): { ok: true } {
   }
 
   putEngine(projectId, engine);
+  const round = recordApproval(projectId, 1);
   runEngine(projectId);
-  return { ok: true };
+  return { ok: true, round };
 }
 
-/// Owner feedback on the pilot or any already-submitted chapter: recorded,
-/// appended to the story's durable style rules, and turned into a revision
-/// card — independent of whatever stage the pipeline is currently in.
-export function requestFeedback(projectId: string, chapterArg: number | undefined, text: string): { ok: true; feedback_id: string } {
-  if (typeof text !== "string" || text.trim() === "") throw new Error("text is required");
-  const engine = getEngine(projectId);
+// ── Owner review rounds (SW-12) ───────────────────────────────────────────
+// The owner reviews a draft in rounds (src/types.ts "Owner review rounds"):
+// notes anchored to lines, then Approve or Request changes. A round opens
+// with the owner's first note or decision, or — after a redraft cleared its
+// cold read — by the engine (`openNextRound`).
+
+const redraftMessage = (chapter: number, round: number) =>
+  `chapter ${chapter} is being redrafted from your round ${round} review — the new draft comes back as round ${round + 1} once its cold read is done`;
+
+/// The chapter text the owner may review now, or why not: from the owner
+/// gate on, a chapter with submitted text whose cold read (C1) and fixes
+/// (C2) have cleared — a draft reaches the owner only after that — and
+/// whose last review isn't still being redrafted.
+function reviewableChapter(engine: EngineState, projectId: string, chapter: number): ChapterDoc {
+  if (!Number.isInteger(chapter) || chapter < 1) throw new Error("chapter must be a chapter number (1 or more)");
   if (STAGES.indexOf(engine.stage) < STAGES.indexOf("pilot_review")) {
-    throw new PipelineConflict(`cannot leave feedback before the pilot is written (stage: ${engine.stage})`);
+    throw new PipelineConflict(`cannot review before the pilot is ready for you (stage: ${engine.stage})`);
   }
-  const chapter = typeof chapterArg === "number" ? chapterArg : 1;
-  if (chapter !== 1 && !getChapter(projectId, chapter)) {
-    throw new Error(`chapter ${chapter} has no submitted text yet`);
+  const doc = getChapter(projectId, chapter);
+  if (!doc) throw new Error(`chapter ${chapter} has no submitted text yet`);
+  const last = latestRound(getOwnerReview(projectId, chapter));
+  if (last?.status === "changes_requested") throw new PipelineConflict(redraftMessage(chapter, last.round));
+  // Pipelines started before cold reads existed passed the pilot (and, past
+  // the chapter stage, every chapter) without one.
+  const legacy = !engine.units[`cold_read:${chapter}`] && (chapter === 1 || STAGES.indexOf(engine.stage) > STAGES.indexOf("chapters"));
+  if (!legacy && !coldReadCleared(projectId, engine.units, chapter)) {
+    throw new PipelineConflict(`chapter ${chapter} isn't ready for your review yet — its cold read and cold-read fixes come first`);
+  }
+  return doc;
+}
+
+/// The chapter's open round, or a new one on the current draft. Not saved.
+function openRound(projectId: string, chapter: number, revision: number): { doc: OwnerReviewDoc; round: OwnerReviewRound } {
+  const doc = getOwnerReview(projectId, chapter) ?? { chapter, rounds: [] };
+  const last = latestRound(doc);
+  if (last && last.status === "open") return { doc, round: last };
+  if (last && last.status === "changes_requested") throw new PipelineConflict(redraftMessage(chapter, last.round));
+  const round: OwnerReviewRound = { round: (last?.round ?? 0) + 1, chapter_revision: revision, status: "open", notes: [], opened_at: nowIso() };
+  doc.rounds.push(round);
+  return { doc, round };
+}
+
+function recordApproval(projectId: string, chapter: number): number {
+  const revision = getChapter(projectId, chapter)?.revision ?? 0;
+  const { doc, round } = openRound(projectId, chapter, revision);
+  round.status = "approved";
+  round.decided_at = nowIso();
+  round.decided_revision = revision;
+  putOwnerReview(projectId, doc);
+  return round.round;
+}
+
+/// Add one note to the chapter's open round (opening one if needed),
+/// anchored to lines of the current draft.
+export function requestOwnerNote(projectId: string, chapter: number, input: any): { ok: true; round: number; note: OwnerNote } {
+  const chapterDoc = reviewableChapter(getEngine(projectId), projectId, chapter);
+  const { doc, round } = openRound(projectId, chapter, chapterDoc.revision);
+  if (round.notes.length >= MAX_OWNER_NOTES_PER_ROUND) {
+    throw new Error(`a review round holds at most ${MAX_OWNER_NOTES_PER_ROUND} notes — request changes on these first`);
+  }
+  const note = buildNote(input, round, chapterDoc.markdown, chapterDoc.revision);
+  round.notes.push(note);
+  putOwnerReview(projectId, doc);
+  return { ok: true, round: round.round, note };
+}
+
+function openNote(projectId: string, chapter: number, id: unknown): { doc: OwnerReviewDoc; round: OwnerReviewRound; index: number } {
+  const doc = getOwnerReview(projectId, chapter);
+  const round = latestRound(doc);
+  if (!doc || !round || round.status !== "open") {
+    throw new PipelineConflict(`chapter ${chapter} has no open review round — notes can only change until you approve or request changes`);
+  }
+  const index = round.notes.findIndex((n) => n.id === id);
+  if (index < 0) throw new Error(`unknown note '${String(id)}' in chapter ${chapter}, round ${round.round}`);
+  return { doc, round, index };
+}
+
+export function requestOwnerNoteUpdate(projectId: string, chapter: number, id: unknown, input: any): { ok: true; round: number; note: OwnerNote } {
+  const { doc, round, index } = openNote(projectId, chapter, id);
+  editNote(round.notes[index], input);
+  putOwnerReview(projectId, doc);
+  return { ok: true, round: round.round, note: round.notes[index] };
+}
+
+export function requestOwnerNoteDelete(projectId: string, chapter: number, id: unknown): { ok: true; round: number } {
+  const { doc, round, index } = openNote(projectId, chapter, id);
+  round.notes.splice(index, 1);
+  putOwnerReview(projectId, doc);
+  return { ok: true, round: round.round };
+}
+
+/// The owner finishes a round. "approve": the pilot at the gate passes it
+/// (requestApprove); any other chapter's round closes as approved.
+/// "changes": every note (plus the optional overall note) becomes one
+/// feedback entry and an owner-review revision card; the overall note is
+/// appended to the story's rules unless `toRules` is false. The writer's
+/// redraft is cold-read again and returns as the next round.
+export function requestOwnerDecision(
+  projectId: string,
+  chapter: number,
+  decision: unknown,
+  summaryArg?: unknown,
+  toRulesArg?: unknown,
+): { ok: true; round: number; feedback_id?: string } {
+  if (decision !== "approve" && decision !== "changes") throw new Error('decision must be "approve" or "changes"');
+  const engine = getEngine(projectId);
+  if (decision === "approve" && chapter === 1 && engine.stage === "pilot_review") return requestApprove(projectId);
+  const chapterDoc = reviewableChapter(engine, projectId, chapter);
+
+  if (decision === "approve") {
+    const last = latestRound(getOwnerReview(projectId, chapter));
+    if (last && last.status === "approved" && last.decided_revision === chapterDoc.revision) return { ok: true, round: last.round };
+    return { ok: true, round: recordApproval(projectId, chapter) };
   }
 
-  const entry = addFeedback(projectId, { source: "owner", chapter, text, appended_to_rules: true });
-  const brief = getBrief(projectId);
-  if (brief) {
-    putBrief(projectId, { ...brief, elements: { ...brief.elements, style_rules: [...brief.elements.style_rules, text] }, updated_at: nowIso() });
+  const summary = typeof summaryArg === "string" ? summaryArg.trim() : "";
+  if (summary.length > MAX_OWNER_SUMMARY_CHARS) throw new Error(`the overall note is too long (max ${MAX_OWNER_SUMMARY_CHARS} characters)`);
+  const { doc, round } = openRound(projectId, chapter, chapterDoc.revision);
+  if (round.notes.length === 0 && !summary) throw new Error("add at least one note, or an overall note, before requesting changes");
+  const toRules = !!summary && toRulesArg !== false;
+
+  const entry = addFeedback(projectId, {
+    source: "owner",
+    chapter,
+    text: feedbackText(chapter, round, summary),
+    appended_to_rules: toRules,
+    ...(round.notes.length > 0 ? { chapter_only: true } : {}),
+    round: round.round,
+  });
+  if (toRules) {
+    const brief = getBrief(projectId);
+    if (brief) {
+      putBrief(projectId, { ...brief, elements: { ...brief.elements, style_rules: [...brief.elements.style_rules, summary] }, updated_at: nowIso() });
+    }
   }
 
-  const id = `revision:fb:${entry.id}`;
   const now = nowIso();
-  engine.units[id] = { id, kind: "revision", status: "open", card_id: null, attempt: 1, chapter, created_at: now, updated_at: now };
+  round.status = "changes_requested";
+  round.decided_at = now;
+  round.decided_revision = chapterDoc.revision;
+  if (summary) round.summary = summary;
+  round.summary_to_rules = toRules;
+  round.feedback_id = entry.id;
+  putOwnerReview(projectId, doc);
+
+  const id = ownerRevisionId(chapter, round.round);
+  engine.units[id] = { id, kind: "revision", status: "open", card_id: null, attempt: 1, chapter, round: round.round, created_at: now, updated_at: now };
   putEngine(projectId, engine);
   runEngine(projectId);
-  return { ok: true, feedback_id: entry.id };
+  return { ok: true, round: round.round, feedback_id: entry.id };
+}
+
+/// The free-text fallback (POST /pipeline/feedback): an overall note with
+/// no line notes — the same "Request changes" path, appended to the rules.
+export function requestFeedback(projectId: string, chapterArg: number | undefined, text: string): { ok: true; feedback_id: string } {
+  if (typeof text !== "string" || text.trim() === "") throw new Error("text is required");
+  const chapter = typeof chapterArg === "number" ? chapterArg : 1;
+  const res = requestOwnerDecision(projectId, chapter, "changes", text, true);
+  return { ok: true, feedback_id: res.feedback_id as string };
 }
 
 /// Reset every failed unit (or just `unitId`) so the next engine run mints

@@ -63,7 +63,7 @@ export const STAGES = [
   {
     id: "pilot_review",
     label: "Your review",
-    blurb: "Read the pilot, then approve it or send feedback. Feedback on any chapter becomes a revision card, listed here.",
+    blurb: "Read the pilot and leave notes on any passage, then approve it or request changes. Each request becomes a revision card; the redraft is cold-read again and comes back to you as the next round.",
   },
   {
     id: "chapters",
@@ -163,8 +163,15 @@ function passIndexOf(u) {
   return i < 0 ? -1 : i;
 }
 
+/// A revision the owner asked for: the free-text feedback of older
+/// pipelines ("revision:fb:*") or a review round's notes
+/// ("revision:owner:<chapter>:<round>", SW-12).
 export function isFeedbackRevision(u) {
-  return !!(u && u.id && u.id.startsWith("revision:fb:"));
+  return !!(u && u.id && (u.id.startsWith("revision:fb:") || u.id.startsWith("revision:owner:")));
+}
+
+export function isOwnerRevision(u) {
+  return !!(u && u.id && u.id.startsWith("revision:owner:"));
 }
 
 export function unitLabel(u) {
@@ -178,6 +185,7 @@ export function unitLabel(u) {
     case "review":
       return `Chapter ${u.chapter} · ${passLabel(u.pass)} pass`;
     case "revision":
+      if (isOwnerRevision(u)) return `${u.chapter === 1 ? "Pilot" : `Chapter ${u.chapter}`} · redraft from your round ${u.round || u.id.split(":")[3]} notes`;
       if (isFeedbackRevision(u)) return `Chapter ${u.chapter} · revision from your feedback`;
       return `Chapter ${u.chapter} · ${passLabel(u.id.split(":")[3])} revision`;
     case "cold_read":
@@ -261,6 +269,11 @@ export function stageSummaries(state, cards) {
   const units = sortedUnits(state).filter((u) => u.kind !== "generate");
   const notes = (state && state.pipeline && state.pipeline.stages) || {};
   const cold = coldReadProgress(state, 1);
+  // Your notes on the pilot are being redrafted: the redraft goes through the
+  // cold read (and its fixes) again before the gate reopens as a new round.
+  const redraft = engine.stage === "pilot_review" ? reviewInfo(state, 1, cards).pending : null;
+  const rereading = !!redraft && !!cold.read && cold.read.status !== "done";
+  const refixing = !!redraft && !rereading && !!cold.fix && cold.fix.status === "open";
   return STAGES.map((s) => {
     const idx = stepIndex(s.id);
     const mine = units.filter((u) => stageOfUnit(u) === s.id);
@@ -269,7 +282,8 @@ export function stageSummaries(state, cards) {
     let status = idx < at ? "done" : idx === at ? "active" : "pending";
     if (s.id === "final" && engine.finished) status = "done";
     // The gate waits on the owner, except while a revision they asked for runs.
-    if (status === "active" && s.id === "pilot_review" && !mine.some((u) => u.status === "open")) status = "waiting";
+    if (status === "active" && s.id === "pilot_review" && !redraft && !mine.some((u) => u.status === "open")) status = "waiting";
+    if ((s.id === "cold_read" && rereading) || (s.id === "cold_fix" && refixing)) status = "active";
     if (failed && status !== "pending") status = "blocked";
 
     let done = 0;
@@ -284,12 +298,14 @@ export function stageSummaries(state, cards) {
       done = cold.read && cold.read.status === "done" ? 1 : 0;
       // Pipelines started before cold reads existed went past without one.
       if (!cold.read) sub = status === "done" ? "Not run" : "";
+      else if (rereading) sub = working ? "Reading the redraft" : "Redraft waiting for a reader";
       else if (done) sub = cold.total ? `${pl(cold.total, "item")} found` : "Nothing found";
       else if (status !== "pending") sub = working ? "Reading" : "Waiting for a reader";
     } else if (s.id === "cold_fix") {
       total = cold.total;
       done = cold.fixed;
-      if (!cold.read || cold.read.status !== "done") sub = status === "done" ? "Not run" : "";
+      if (rereading) sub = "After the re-read";
+      else if (!cold.read || cold.read.status !== "done") sub = status === "done" ? "Not run" : "";
       else if (!cold.total) sub = "Nothing to fix";
       else sub = `${cold.fixed} / ${cold.total} fixed`;
     } else if (s.id === "pilot_review") {
@@ -297,7 +313,7 @@ export function stageSummaries(state, cards) {
       done = mine.filter((u) => u.status === "done").length;
       const open = mine.filter((u) => u.status === "open").length;
       const plural = (k) => `${k} revision${k === 1 ? "" : "s"}`;
-      if (engine.stage === "pilot_review") sub = open ? `Revising · ${open} open` : "Waiting on you";
+      if (engine.stage === "pilot_review") sub = redraft ? `Redrafting · round ${redraft.round}` : open ? `Revising · ${open} open` : "Waiting on you";
       else if (engine.approved) sub = open ? `${plural(open)} open` : total ? `Approved · ${plural(total)}` : "Approved";
     } else if (s.id === "chapters") {
       total = Math.max(0, n - 1);
@@ -338,13 +354,18 @@ export function gateInfo(state) {
   // the pilot, not approve it yet.
   const pilot = engine.units.pilot;
   const notReady = engine.stage === "pilot" && !!pilot && pilot.status === "done";
+  const review = reviewInfo(state, 1, null);
   return {
     active,
     notReady,
     cold,
     coldClear,
     openPilotRevision,
-    canApprove: active && !openPilotRevision && coldClear,
+    // The pilot is being redrafted from the owner's notes (the revision
+    // card, then the redraft's fresh cold read).
+    redraft: active && !!review.pending,
+    review,
+    canApprove: active && !openPilotRevision && coldClear && !review.pending,
     remaining: Math.max(0, n - 1),
     approved: engine.approved,
   };
@@ -428,7 +449,10 @@ export function chapterRows(state, cards) {
       cold: coldReadCell(state, c, cards),
       fix: coldFixCell(state, c, cards),
       passes: PASSES.map((_p, i) => passCell(state, c, i, cards)),
-      revising: revisions.some((u) => u.status === "open"),
+      // Revisions a review pass asked for; the owner's own redrafts show
+      // through `review` instead.
+      revising: revisions.some((u) => u.status === "open" && !isOwnerRevision(u)),
+      review: reviewInfo(state, c, cards),
       revisions: revisions.length,
       feedback: feedback.filter((f) => f.chapter === c && f.source === "owner").length,
       written: !!doc,
@@ -794,7 +818,7 @@ export function feedbackRows(state, cards) {
     .slice()
     .sort((a, b) => String(b.at).localeCompare(String(a.at)))
     .map((f) => {
-      const unit = units[`revision:fb:${f.id}`] || null;
+      const unit = (f.round && units[`revision:owner:${f.chapter}:${f.round}`]) || units[`revision:fb:${f.id}`] || null;
       return { ...f, unit, status: unit ? unitStatus(unit, cards) : null };
     });
 }
@@ -874,4 +898,182 @@ export function unexplainedList(state, filter) {
     }))
     .filter((r) => r.items.length);
   return { rows: shown, counts, latest };
+}
+// ── Owner review rounds (SW-12) ──────────────────────────────────────────
+// The owner reviews a draft in rounds (src/types.ts "Owner review rounds"):
+// notes anchored to lines of the chapter, then Approve or Request changes.
+// Same verbs as PeckBoard's own Review page.
+
+export const NOTE_KINDS = [
+  { id: "comment", label: "Comment", placeholder: "What should change here, or what's unclear?", needsBody: true },
+  { id: "suggest", label: "Suggest edit", placeholder: "Your replacement text for this passage", needsBody: true },
+  { id: "wrong", label: "Mark wrong", placeholder: "What's wrong here?", needsBody: true },
+  { id: "expand", label: "Expand", placeholder: "Optional: what should be added?", needsBody: false },
+  { id: "shorten", label: "Shorten", placeholder: "Optional: what should go?", needsBody: false },
+];
+
+export function noteKind(id) {
+  return NOTE_KINDS.find((k) => k.id === id) || NOTE_KINDS[0];
+}
+
+export const RESOLUTIONS = {
+  fixed: { label: "Fixed", tone: "ok" },
+  answered: { label: "Answered", tone: "busy" },
+  declined: { label: "Declined", tone: "err" },
+};
+
+export const ROUND_STATUS = {
+  open: { label: "Open", tone: "busy" },
+  changes_requested: { label: "Changes requested", tone: "warn" },
+  revised: { label: "Redrafted", tone: "" },
+  approved: { label: "Approved", tone: "ok" },
+};
+
+export function ownerReviewOf(state, n) {
+  return ((state && state.owner_reviews) || []).find((d) => d.chapter === n) || null;
+}
+
+export function lineLabel(note) {
+  return note.end_line > note.start_line ? `lines ${note.start_line}–${note.end_line}` : `line ${note.start_line}`;
+}
+
+/// Where a pending round's redraft stands: the writer's revision card, then
+/// the redraft's fresh cold read (C1) and its fixes (C2).
+function redraftPhase(state, n, unit, cards) {
+  const st = unitStatus(unit, cards);
+  if (!unit || unit.status === "open") return { key: "revising", label: "The writer is working through your notes", status: st, unit };
+  if (unit.status === "failed") return { key: "failed", label: "The revision card closed without finishing", status: st, unit };
+  const p = coldReadProgress(state, n);
+  if (p.read && p.read.status === "failed") return { key: "failed", label: "The redraft's cold read closed without finishing", status: unitStatus(p.read, cards), unit: p.read };
+  if (p.fix && p.fix.status === "failed") return { key: "failed", label: "The redraft's cold-read fixes closed without finishing", status: unitStatus(p.fix, cards), unit: p.fix };
+  if (!p.read || p.read.status !== "done") return { key: "cold_read", label: "A fresh reader is cold-reading the redraft", status: unitStatus(p.read, cards), unit: p.read };
+  return { key: "cold_fix", label: `The writer is fixing what the cold reader found (${p.fixed} of ${p.total})`, status: unitStatus(p.fix, cards), unit: p.fix };
+}
+
+/// Everything the review surface needs for one chapter: its rounds, the
+/// open one (notes not sent yet), a pending one (being redrafted), and
+/// whether the owner can review it now — the same rule the server applies
+/// (src/pipeline.ts `reviewableChapter`): from the gate on, written, its
+/// cold read and fixes cleared, and not mid-redraft.
+export function reviewInfo(state, n, cards) {
+  const engine = engineOf(state);
+  const doc = ownerReviewOf(state, n);
+  const rounds = (doc && doc.rounds) || [];
+  const last = rounds.length ? rounds[rounds.length - 1] : null;
+  const sum = chapterSummary(state, n);
+  const pending = last && last.status === "changes_requested" ? last : null;
+  const open = last && last.status === "open" ? last : null;
+  const legacy = !engine.units[`cold_read:${n}`] && (n === 1 || stageIndex(engine.stage) > stageIndex("chapters"));
+  let why = null;
+  if (stageIndex(engine.stage) < stageIndex("pilot_review")) {
+    why = n === 1 ? "You can review the pilot once it's written and its cold read and fixes are done." : "You can review chapters once the pilot is approved and they're written.";
+  } else if (!sum) why = "Not written yet.";
+  else if (!pending && !legacy && !coldReadProgress(state, n).clear) why = "Opens once this chapter's cold read is done and every item it found is fixed.";
+  const unit = pending ? engine.units[`revision:owner:${n}:${pending.round}`] || null : null;
+  return {
+    chapter: n,
+    rounds,
+    last,
+    open,
+    pending,
+    unit,
+    phase: pending ? redraftPhase(state, n, unit, cards) : null,
+    canReview: !why && !pending,
+    why,
+    notes: open ? open.notes : [],
+    roundNo: open ? open.round : pending ? pending.round : last ? last.round + 1 : 1,
+    revision: sum ? sum.revision : null,
+    approved: !!(last && last.status === "approved" && sum && last.decided_revision === sum.revision),
+  };
+}
+
+/// One chapter's rounds for the "Your review" tab, newest first, each with
+/// its resolution counts and the revision card that answered it.
+export function roundRows(state, n, cards) {
+  const { units } = engineOf(state);
+  return reviewInfo(state, n, cards)
+    .rounds.slice()
+    .reverse()
+    .map((r) => {
+      const count = (k) => r.notes.filter((x) => x.resolution && x.resolution.action === k).length;
+      const unit = units[`revision:owner:${n}:${r.round}`] || null;
+      return {
+        ...r,
+        status: ROUND_STATUS[r.status] ? r.status : "open",
+        statusInfo: ROUND_STATUS[r.status] || ROUND_STATUS.open,
+        draftRevision: r.decided_revision ?? r.chapter_revision,
+        fixed: count("fixed"),
+        answered: count("answered"),
+        declined: count("declined"),
+        unresolved: r.status === "open" ? 0 : r.notes.filter((x) => !x.resolution).length,
+        unit,
+        unitStatus: unit ? unitStatus(unit, cards) : null,
+      };
+    });
+}
+
+/// Totals for the "Your review" stat tile.
+export function reviewTotals(state) {
+  let sent = 0;
+  let unsent = 0;
+  let redrafting = 0;
+  let approved = 0;
+  for (const d of (state && state.owner_reviews) || []) {
+    for (const r of d.rounds || []) {
+      if (r.status === "open") unsent += r.notes.length;
+      else sent += r.notes.length;
+      if (r.status === "changes_requested") redrafting += 1;
+      if (r.status === "approved") approved += 1;
+    }
+  }
+  return { sent, unsent, redrafting, approved };
+}
+
+/// The chapter text as blocks with their 1-based source line ranges, so a
+/// click or a selection resolves to the lines a note anchors to. Same block
+/// rules as the reader always used: blank lines separate blocks, a heading
+/// line is a block of its own, a block of only `>` lines is a quote.
+export function proseBlocks(md) {
+  const lines = String(md || "").replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let cur = null;
+  const flush = () => {
+    if (cur) blocks.push(finishBlock(cur));
+    cur = null;
+  };
+  lines.forEach((line, i) => {
+    const no = i + 1;
+    if (!line.trim()) return flush();
+    if (/^#{1,6}[ \t]/.test(line)) {
+      flush();
+      blocks.push(finishBlock({ start: no, end: no, lines: [line] }));
+      return;
+    }
+    if (!cur) cur = { start: no, end: no, lines: [] };
+    cur.lines.push(line.replace(/\s+$/, ""));
+    cur.end = no;
+  });
+  flush();
+  return blocks;
+}
+
+function finishBlock(b) {
+  const hm = b.lines.length === 1 ? /^(#{1,6})[ \t]+(.+)$/.exec(b.lines[0].trim()) : null;
+  if (hm) return { ...b, type: "heading", level: hm[1].length, text: hm[2].trim() };
+  if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(b.lines.join("\n"))) return { ...b, type: "hr" };
+  if (b.lines.every((l) => /^\s*>/.test(l))) return { ...b, type: "quote", lines: b.lines.map((l) => l.replace(/^\s*>\s?/, "")) };
+  return { ...b, type: "para" };
+}
+
+/// Which block each note shows under: the block holding its first line,
+/// else the next block after it, else the last one.
+export function placeNotes(blocks, notes) {
+  const at = blocks.map(() => []);
+  for (const note of notes || []) {
+    let i = blocks.findIndex((b) => note.start_line >= b.start && note.start_line <= b.end);
+    if (i < 0) i = blocks.findIndex((b) => b.start > note.start_line);
+    if (i < 0) i = blocks.length - 1;
+    if (i >= 0) at[i].push(note);
+  }
+  return at;
 }

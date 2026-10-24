@@ -1,5 +1,5 @@
 // The plugin manifest JSON body — identity, hooks, permissions, the project
-// "Story" tab, its authenticated data routes, and the nine MCP tools worker
+// "Story" tab, its authenticated data routes, and the ten MCP tools worker
 // sessions use to pull story context and push results.
 
 // Single source of truth for the version: package.json. Bundled in by
@@ -25,12 +25,14 @@ const DESCRIPTION =
   "brief, records, cards or other worker output. The dashboard shows each stage's cards, " +
   "worker status, per-chapter progress, character sheets (including first introduction), " +
   "the per-chapter emotion/attitude matrix, who-knows-what, setup/payoff tracking, cold-read " +
-  "items and fix status, the choices map, a glossary, and chapter recaps. Feedback on the " +
-  "pilot or any chapter becomes a revision card and can be appended to the story's style " +
-  "rules. Worker sessions pull context and push results through story_get_brief, " +
-  "story_get_records, story_submit_records, story_submit_chapter, story_update_state, " +
-  "story_report_review, story_cold_read_get_text, story_submit_cold_read and " +
-  "story_submit_cold_read_fixes; the writer (default Claude Opus 5.5) and reviewer models " +
+  "items and fix status, the choices map, a glossary, and chapter recaps. The owner reviews " +
+  "the pilot (and any written chapter) in rounds: notes anchored to lines of the draft, then " +
+  "Approve or Request changes — every note goes to a revision card, the writer records how " +
+  "each was handled, the redraft is cold-read again and comes back as the next round. Worker " +
+  "sessions pull context and push results through story_get_brief, story_get_records, " +
+  "story_submit_records, story_submit_chapter, story_update_state, story_report_review, " +
+  "story_cold_read_get_text, story_submit_cold_read, story_submit_cold_read_fixes and " +
+  "story_submit_owner_review_fixes; the writer (default Claude Opus 5.5) and reviewer models " +
   "are configurable below.";
 
 // Inline SVG (lucide "book") for the project tab icon; rendered sandboxed.
@@ -52,7 +54,7 @@ export function manifestJson(): string {
       "contribute_sidebar", // the project_items tab below
       "data_store", // brief / records / per-chapter docs / pipeline state
       "cards_write", // advance pipeline cards (peckboard_update_card)
-      "provide_mcp_tools", // the nine worker-facing story_* tools
+      "provide_mcp_tools", // the ten worker-facing story_* tools
       "project_files_read", // read story/ files already written
       "project_files_write", // write chapters/records into story/ (tool-invocation only)
       "models_read", // model picker in the wizard UI
@@ -84,6 +86,10 @@ export function manifestJson(): string {
       "GET /api/plugin-ui/story-writer/export",
       "GET /api/plugin-ui/story-writer/cards",
       "GET /api/plugin-ui/story-writer/chapter",
+      "POST /api/plugin-ui/story-writer/review/note",
+      "POST /api/plugin-ui/story-writer/review/note/update",
+      "POST /api/plugin-ui/story-writer/review/note/delete",
+      "POST /api/plugin-ui/story-writer/review/decide",
     ],
 
     settings: [
@@ -213,6 +219,17 @@ export function manifestJson(): string {
           "each item (C2: confusion is the text's fault). Every item needs a fix before the " +
           "chapter can advance past cold-read fixing.",
         input_schema: SCHEMAS.story_submit_cold_read_fixes,
+        worker_allowed: true,
+      },
+      {
+        name: "story_submit_owner_review_fixes",
+        description:
+          "Record, for one owner review round of a chapter, how you handled every note the " +
+          "owner left: fixed (what changed in the text), answered (the answer to a question), or " +
+          "declined (only when the note conflicts with the brief, the records or an earlier owner " +
+          "decision — name the conflict). Every note needs a resolution before the revision card " +
+          "counts as done; the owner sees each one in the next round.",
+        input_schema: SCHEMAS.story_submit_owner_review_fixes,
         worker_allowed: true,
       },
     ],
