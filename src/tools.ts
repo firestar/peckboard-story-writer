@@ -25,6 +25,7 @@ import {
   getBrief,
   getChapter,
   getColdRead,
+  getEngine,
   getFeedback,
   getOwnerReview,
   listOwnerReviews,
@@ -45,7 +46,7 @@ import {
   upsertSection,
 } from "./docs";
 import { chapterFileName, writeBrief, writeChapter, writeColdRead, writeOwnerReview, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
-import { redraftPending, underRevision } from "./ownerReview";
+import { isOwnerRevisionId, redraftPending, underRevision } from "./ownerReview";
 import { Brief, ChapterDoc, ColdReadDoc, ColdReadItem, OwnerNoteAction, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, StageId, nowIso } from "./types";
 
 const SESSION_ROLE_ERRORS: Record<SessionRole, string> = {
@@ -143,6 +144,75 @@ export function toolSubmitRecords(args: any, _context: any): any {
   return { ok: true, sections: changed, counts };
 }
 
+/// The card a story_submit_chapter call says it comes from: its unit's
+/// `<!-- story-writer:unit=<id>#<attempt> -->` stamp (src/pipeline.ts
+/// unitMarker), bare or as the whole comment.
+function parseUnitArg(raw: string): { id: string; attempt: number } {
+  const value = raw.replace(/^\s*(?:<!--\s*)?(?:story-writer:unit=)?/, "").replace(/\s*(?:-->)?\s*$/, "");
+  const at = value.lastIndexOf("#");
+  const attempt = at > 0 ? Number(value.slice(at + 1)) : NaN;
+  if (!Number.isInteger(attempt) || attempt < 1) {
+    throw new Error(
+      `unit '${raw}' isn't a card unit — pass the value of the <!-- story-writer:unit=... --> line at the end of your card, e.g. "chapter:3#1"`,
+    );
+  }
+  return { id: value.slice(0, at), attempt };
+}
+
+/// Chapter text only from a card whose work is current (SW-15 gap). The host
+/// tells a tool the calling session, not its card, so the writer names its
+/// card's unit and the engine's units decide:
+/// - a named unit must be this chapter's, on its current attempt, still
+///   open, and not left over from before an owner redraft restarted the
+///   chapter's review passes (`cursor.stale`) — otherwise its card is stale;
+/// - while the owner has the chapter back for a redraft (an unsettled
+///   `revision:owner:N:R` unit) the unit is required, and only that
+///   revision's card — or, once it's done, the redraft's own cold-read fix
+///   card — may change the text. A review-revision or fix card that was
+///   already running when the owner clicked "Request changes" is refused,
+///   so it can neither overwrite the redraft nor pass for it
+///   (revisionProblem counts any newer revision as the redraft).
+/// Chosen over blocking the stale cards on the board (peckboard_update_card):
+/// a blocked flag doesn't reach a worker mid-run, and the refusal tells it
+/// to stop. Unnamed calls outside a redraft are accepted as before.
+function assertCurrentWriter(projectId: string, chapter: number, unitArg: string | null): void {
+  const engine = getEngine(projectId);
+  const units = engine.units;
+  const claimed = unitArg === null ? null : parseUnitArg(unitArg);
+  if (claimed) {
+    const unit = units[claimed.id];
+    if (!unit || unit.chapter !== chapter) {
+      throw new Error(`unit '${claimed.id}' isn't a pipeline card for chapter ${chapter} — check the story-writer:unit line on your card`);
+    }
+    const why =
+      unit.attempt !== claimed.attempt
+        ? `has moved it to attempt ${unit.attempt}`
+        : unit.status !== "open"
+          ? `has marked it ${unit.status}`
+          : engine.cursors[String(chapter)]?.stale?.includes(unit.id)
+            ? "restarted the chapter's review passes on the owner's redraft"
+            : null;
+    if (why) {
+      throw new Error(
+        `your card (${claimed.id}#${claimed.attempt}) is no longer current — the pipeline ${why}. ` +
+          `Stop: don't submit chapter ${chapter}; finish your card without further changes.`,
+      );
+    }
+  }
+
+  const redraft = Object.values(units).find((u) => isOwnerRevisionId(u.id) && !u.settled && u.chapter === chapter);
+  if (!redraft) return;
+  const fixId = `cold_read_fix:${chapter}`;
+  const allowed = claimed !== null && (claimed.id === redraft.id || (claimed.id === fixId && redraft.status === "done"));
+  if (!allowed) {
+    throw new Error(
+      `chapter ${chapter} is being redrafted from the owner's round ${redraft.round} review — only that revision card ` +
+        `(${redraft.id}, passing its unit) may change the text now. Any other pass on the old draft is void: stop, don't submit, ` +
+        `and finish your card; review passes re-run on the new draft once its cold read is done.`,
+    );
+  }
+}
+
 /// Store a chapter's text (and optional recap / records update), bumping its
 /// revision, and mirror it into story/chapters/.
 export function toolSubmitChapter(args: any, _context: any): any {
@@ -152,6 +222,7 @@ export function toolSubmitChapter(args: any, _context: any): any {
   const chapter: number = args.chapter;
   const markdown: string = args.markdown;
   const recap: string | null = typeof args.recap === "string" ? args.recap : null;
+  assertCurrentWriter(projectId, chapter, typeof args.unit === "string" ? args.unit : null);
 
   // Records first: a rejected item fails the call before the chapter lands.
   if (args.records) {

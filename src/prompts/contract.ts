@@ -24,6 +24,15 @@ export function draftKey(element: string): string {
   return `draft_${element}`;
 }
 
+/// Every story_submit_chapter call names the card it comes from (SW-15 gap):
+/// the pipeline refuses text from a card it has since retried, finished, or
+/// superseded with an owner redraft. Never spell out the comment itself
+/// here: a second `<!-- story-writer:unit=... -->` in the description would
+/// read as the card's marker.
+export const UNIT_ARG_LINE =
+  `On every ${TOOLS.submitChapter} call pass \`unit\`: the value after "story-writer:unit=" in the comment at the very end of this card (e.g. "chapter:3#1"). ` +
+  "If the call is refused because the card is no longer current, stop — don't resubmit; finish the card.";
+
 export type StageKind = "records" | "pilot" | "chapter" | "review" | "revision" | "generate";
 
 export interface ContractInput {
@@ -83,6 +92,7 @@ export function contract(kind: StageKind, x: ContractInput = {}): string {
       );
       break;
   }
+  if (kind !== "records" && kind !== "generate") lines.push(UNIT_ARG_LINE);
 
   lines.push("Don't create, move or unblock pipeline cards — the plugin advances the pipeline when this card reaches done.");
   return lines.join("\n");

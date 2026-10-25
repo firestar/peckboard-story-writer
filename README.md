@@ -366,6 +366,17 @@ card's own description.
   chapter being redrafted doesn't count as cleared, so later chapters'
   cold reads wait (C1). In the review stage its passes hold, then restart
   from structure on the new text with fresh cards.
+- Chapter text is bound to its card: writers pass `unit` (the
+  `story-writer:unit=<id>#<attempt>` stamp at the end of their card) to
+  `story_submit_chapter`. A named unit must be the chapter's, current
+  (same attempt, still open) and not left stale by a redraft restart.
+  While an owner redraft is unsettled, `unit` is required and only the
+  `revision:owner:N:R` card — then the redraft's own cold-read fix card —
+  may change the text; a review-revision or fix card already running when
+  the owner requested changes is refused and told to stop, so it can't
+  overwrite the redraft or pass for it. (Chosen over blocking those cards
+  with `peckboard_update_card`: the host can't tell a tool which card is
+  calling, and a blocked flag doesn't reach a worker mid-run.)
 - Each review pass allows up to `MAX_REVIEW_ROUNDS` (2) attempts
   (`changes_requested` -> a revision card -> the same pass again) before
   moving on regardless, so one stubborn pass can't stall a chapter forever.

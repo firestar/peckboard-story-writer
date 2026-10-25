@@ -134,6 +134,12 @@ export const SCHEMAS = {
         ...RECORDS_UPDATE_SCHEMA,
         description: "Optional partial records update this chapter causes (same shape as story_submit_records).",
       },
+      unit: {
+        type: "string",
+        minLength: 1,
+        description:
+          "Your card's pipeline unit: the value of the `<!-- story-writer:unit=... -->` line at the end of your card, e.g. \"revision:owner:3:1#1\" (the whole comment works too). Required while the owner has the chapter back for a redraft.",
+      },
     },
     required: ["chapter", "markdown"],
     additionalProperties: false,

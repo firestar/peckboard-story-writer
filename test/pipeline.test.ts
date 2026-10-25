@@ -51,12 +51,22 @@ function open(cards: FakeCard[]): FakeCard[] {
   return cards.filter((c) => c.step !== "done" && c.step !== "wont_do");
 }
 
+/// The `unit` a writer passes to story_submit_chapter: its card's
+/// `<!-- story-writer:unit=<id>#<attempt> -->` stamp.
+function unitOf(card: FakeCard): string {
+  const m = /<!-- story-writer:unit=([^\s#]+#\d+) -->/.exec(card.description ?? "");
+  expect(m, `unit marker on "${card.title}"`).toBeTruthy();
+  return m![1];
+}
+
 /// A real writer calls story_submit_chapter before its card reaches done —
 /// the cold-read tools (and the engine's own freshness check) need the
-/// chapter's text to already be stored. Submits a throwaway draft, then
-/// finishes the card.
+/// chapter's text to already be stored. Submits a throwaway draft under the
+/// card's unit, then finishes the card.
 function submitAndFinish(cards: ReturnType<typeof fakeCards>, cardId: string, chapter: number): void {
-  invoke("story_submit_chapter", { chapter, markdown: `# Chapter ${chapter}\n\nDraft text.` });
+  const card = cards.cards.find((c) => c.id === cardId)!;
+  const res = invoke("story_submit_chapter", { chapter, markdown: `# Chapter ${chapter}\n\nDraft text.`, unit: unitOf(card) });
+  expect(res.ok, res.error).toBe(true);
   finishCard(cards, cardId);
 }
 
@@ -361,7 +371,7 @@ describe("owner review rounds (SW-12)", () => {
     expect(invoke("story_get_brief").owner_reviews).toMatchObject([{ chapter: 1, round: 1, revision: 1, summary: "Keep Mara cold." }]);
 
     // Finishing without recording every note doesn't count.
-    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT.replace("Mara forgave him", "Mara did not look at him") });
+    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT.replace("Mara forgave him", "Mara did not look at him"), unit: unitOf(revisionCard) });
     expect(invoke("story_submit_owner_review_fixes", { chapter: 1, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "Mara stays silent." }] })).toEqual({
       ok: true,
       unresolved: ["n2", "n4"],
@@ -419,7 +429,7 @@ describe("owner review rounds (SW-12)", () => {
     toPilotReview();
     note(1, { kind: "wrong", start_line: 5, quote: "Mara forgave him", body: "Too fast." });
     authed("POST", "/review/decide", { chapter: 1, decision: "changes" });
-    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT + "\n" });
+    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT + "\n", unit: unitOf(open(cards.cards).find((c) => c.title.includes("owner review"))!) });
     invoke("story_submit_owner_review_fixes", { chapter: 1, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "She stays silent." }] });
     const file = files["story/reviews/chapter-01-owner.md"];
     expect(file).toContain("## Round 1 — changes requested");
@@ -466,7 +476,7 @@ describe("owner review rounds (SW-12)", () => {
     authed("POST", "/review/decide", { chapter: 2, decision: "changes" });
     const card = open(cards.cards).find((c) => c.title === "Revise chapter 2 from owner review — round 1")!;
     expect(card).toBeTruthy();
-    invoke("story_submit_chapter", { chapter: 2, markdown: "# Chapter 2\n\nThe harbour, grey." });
+    invoke("story_submit_chapter", { chapter: 2, markdown: "# Chapter 2\n\nThe harbour, grey.", unit: unitOf(card) });
     invoke("story_submit_owner_review_fixes", { chapter: 2, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "Opened on the harbour." }] });
     finishCard(cards, card.id);
     finishColdRead(cards, 2);
@@ -490,7 +500,7 @@ describe("owner review rounds (SW-12)", () => {
     expect(authed("GET", "/state").body.engine.stage).toBe("chapters");
 
     const card = open(cards.cards).find((c) => c.title.startsWith("Revise chapter 2"))!;
-    invoke("story_submit_chapter", { chapter: 2, markdown: "# Chapter 2\n\nMore." });
+    invoke("story_submit_chapter", { chapter: 2, markdown: "# Chapter 2\n\nMore.", unit: unitOf(card) });
     invoke("story_submit_owner_review_fixes", { chapter: 2, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "Added the harbour." }] });
     finishCard(cards, card.id);
     expect(authed("GET", "/state").body.engine.stage).toBe("chapters"); // its fresh cold read first
@@ -555,7 +565,7 @@ describe("SW-15: open notes on approve; no passes during a redraft", () => {
     expect(authed("GET", "/state").body.cold_reads.find((d: any) => d.chapter === 1).attempt).toBe(1);
 
     // The redraft is in: its fresh cold read is accepted.
-    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT.replace("Mara forgave him", "Mara did not look at him") });
+    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT.replace("Mara forgave him", "Mara did not look at him"), unit: "revision:owner:1:1#1" });
     invoke("story_submit_owner_review_fixes", { chapter: 1, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "She stays silent." }] });
     finishCard(cards, open(cards.cards).find((c) => c.title.includes("owner review"))!.id);
     finishColdRead(cards, 1, ["Why is Mara cold?"]);
@@ -584,7 +594,7 @@ describe("SW-15: open notes on approve; no passes during a redraft", () => {
     expect(st.engine.stage).toBe("review");
 
     // Redraft in; its cold read runs — passes still held, reports still refused.
-    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT.replace("Mara forgave him", "Mara did not look at him") });
+    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT.replace("Mara forgave him", "Mara did not look at him"), unit: "revision:owner:1:2#1" });
     invoke("story_submit_owner_review_fixes", { chapter: 1, round: 2, resolutions: [{ note: "n1", action: "fixed", how: "She stays silent." }] });
     finishCard(cards, open(cards.cards).find((c) => c.title.includes("owner review"))!.id);
     expect(open(cards.cards).some((c) => c.title.includes("(structure)") || c.title.includes("(character)"))).toBe(false);
@@ -614,7 +624,7 @@ describe("SW-15: open notes on approve; no passes during a redraft", () => {
     submitAndFinish(cards, cards.cards.find((c) => c.title === "Chapter 3")!.id, 3);
     expect(authed("GET", "/state").body.engine.units["cold_read:3"]).toBeUndefined();
 
-    invoke("story_submit_chapter", { chapter: 2, markdown: "# Chapter 2\n\nMore harbour." });
+    invoke("story_submit_chapter", { chapter: 2, markdown: "# Chapter 2\n\nMore harbour.", unit: "revision:owner:2:1#1" });
     invoke("story_submit_owner_review_fixes", { chapter: 2, round: 1, resolutions: [{ note: "n1", action: "fixed", how: "Added the harbour." }] });
     finishCard(cards, open(cards.cards).find((c) => c.title.startsWith("Revise chapter 2"))!.id);
     let units = authed("GET", "/state").body.engine.units;
@@ -625,6 +635,62 @@ describe("SW-15: open notes on approve; no passes during a redraft", () => {
     units = authed("GET", "/state").body.engine.units;
     expect(units["revision:owner:2:1"].settled).toBe(true);
     expect(units["cold_read:3"]).toMatchObject({ status: "open" });
+  });
+
+  it("refuses chapter text from a review-revision card still running when the owner requests changes; the redraft is accepted", () => {
+    setupBrief({ basics: { ...briefFixture().basics, chapter_count: 1 } });
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    submitAndFinish(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id, 1);
+    finishColdRead(cards, 1);
+    authed("POST", "/pipeline/approve");
+    const structure = open(cards.cards).find((c) => c.title.includes("(structure)"))!;
+    invoke("story_report_review", { chapter: 1, pass: "structure", verdict: "changes_requested", notes: "Scene 2 sags." });
+    finishCard(cards, structure.id);
+    const fixCard = open(cards.cards).find((c) => c.description.includes("story-writer:unit=revision:review:1:structure#"))!;
+    expect(fixCard).toBeTruthy();
+    expect(fixCard.description).toContain('pass `unit`: the value after "story-writer:unit="');
+    expect(fixCard.description.match(/<!-- story-writer:unit=/g)).toHaveLength(1);
+
+    // The owner sends chapter 1 back while the review fix is still running.
+    note(1, { kind: "wrong", start_line: 3, body: "Too fast." });
+    authed("POST", "/review/decide", { chapter: 1, decision: "changes" });
+    const chapterFiles = () => JSON.stringify(Object.entries(files).filter(([path]) => path.startsWith("story/chapters/")));
+    const revision = () => authed("GET", "/state").body.chapters.find((c: any) => c.chapter === 1).revision;
+    const filesBefore = chapterFiles();
+    const revBefore = revision();
+
+    // The stale fix card can't change the text — named or not.
+    const fix = { chapter: 1, markdown: "# Chapter 1\n\nThe structure fix.", recap: "stale" };
+    const named = invoke("story_submit_chapter", { ...fix, unit: unitOf(fixCard) });
+    expect(named.error).toContain("being redrafted from the owner's round 2 review");
+    expect(named.error).toContain("only that revision card (revision:owner:1:2");
+    expect(invoke("story_submit_chapter", fix).error).toContain("being redrafted from the owner's round 2 review");
+    expect(revision()).toBe(revBefore);
+    expect(chapterFiles()).toBe(filesBefore);
+    expect(authed("GET", "/state").body.chapters[0].recap).not.toBe("stale");
+
+    // The owner-revision writer's redraft is accepted (the whole marker works too).
+    const ownerCard = open(cards.cards).find((c) => c.title.includes("owner review"))!;
+    expect(ownerCard.description).toContain('pass `unit`: the value after "story-writer:unit="');
+    expect(invoke("story_submit_chapter", { chapter: 1, markdown: "x", unit: "revision:owner:1:2#2" }).error).toContain("no longer current");
+    expect(invoke("story_submit_chapter", { chapter: 1, markdown: "x", unit: "revision:owner:1:2" }).error).toContain("isn't a card unit");
+    const redraft = invoke("story_submit_chapter", { chapter: 1, markdown: "# Chapter 1\n\nThe redraft.", unit: `<!-- story-writer:unit=${unitOf(ownerCard)} -->` });
+    expect(redraft).toMatchObject({ ok: true, revision: revBefore + 1 });
+    invoke("story_submit_owner_review_fixes", { chapter: 1, round: 2, resolutions: [{ note: "n1", action: "fixed", how: "Slowed it down." }] });
+    finishCard(cards, ownerCard.id);
+    expect(authed("GET", "/state").body.engine.units["revision:owner:1:2"]).toMatchObject({ status: "done" });
+
+    // Still refused while the redraft's cold read runs, and after the round
+    // settles (the passes restart on the new draft; the old card is stale).
+    expect(invoke("story_submit_chapter", { ...fix, unit: unitOf(fixCard) }).error).toContain("being redrafted");
+    finishColdRead(cards, 1);
+    const st = authed("GET", "/state").body;
+    expect(st.engine.units["revision:owner:1:2"].settled).toBe(true);
+    expect(invoke("story_submit_chapter", { ...fix, unit: unitOf(fixCard) }).error).toContain("restarted the chapter's review passes");
+    expect(invoke("story_submit_chapter", { ...fix, unit: unitOf(ownerCard) }).error).toContain("marked it done");
+    expect(st.chapters.find((c: any) => c.chapter === 1).revision).toBe(revBefore + 1);
+    expect(Object.entries(files).find(([path]) => path.startsWith("story/chapters/"))![1]).toContain("The redraft.");
   });
 });
 describe("pipeline engine: review changes_requested loop", () => {
