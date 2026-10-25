@@ -1,6 +1,6 @@
 {
   "name": "peckboard-story-writer",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "PeckBoard plugin: a per-project Story tab that runs a setup wizard (premise, plot, characters, relationships, themes, endings, style rules, banned words — each 'I write it' / 'AI drafts, I edit' / 'AI generates') and then a chaptered writing pipeline (pilot chapter -> owner review gate -> parallel chapters -> structure/character/pacing/line/copyedit review passes -> export), driving it with cards (peckboard_create_card / peckboard_update_card) and worker MCP tools (story_get_brief, story_get_records, story_submit_records, story_submit_chapter, story_update_state, story_report_review).",
   "scripts": {
