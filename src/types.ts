@@ -116,6 +116,19 @@ export interface StoryElements {
   banned_words: string[];
 }
 
+/// Where an agent-added style rule came from (SW-16 `story_add_style_rules`).
+/// Matched to its rule by normalized text (trimmed, case-insensitive); a rule
+/// the owner edits or deletes in the wizard drops its entry — an edited rule
+/// is the owner's own from then on.
+export interface RuleSource {
+  rule: string;
+  /// e.g. "story/reviews/chapter-01-owner.md:41".
+  source: string;
+  card_id?: string;
+  session_id?: string;
+  added_at: string;
+}
+
 export interface Brief {
   about: string;
   basics: StoryBasics;
@@ -126,7 +139,14 @@ export interface Brief {
   /// (src/prompts/lessons.ts): replacement markdown, or "" to drop that
   /// lesson from every card. Absent = all defaults.
   lesson_overrides?: Record<string, string>;
+  /// Provenance of style rules a worker added (absent = all the owner's).
+  rule_sources?: RuleSource[];
   updated_at: string;
+}
+
+/// The dedupe key for a style rule: trimmed, case-insensitive.
+export function ruleKey(rule: string): string {
+  return rule.trim().toLowerCase();
 }
 
 /// Starting modes for a fresh wizard: the owner writes the style rules and

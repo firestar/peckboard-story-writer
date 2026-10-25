@@ -2361,6 +2361,11 @@ export function mountDashboard(container, opts) {
   function sourceTag(r) {
     if (r.source === "owner") return badge("busy", r.chapter ? `Your feedback · ch ${r.chapter}` : "Your feedback");
     if (r.source === "review") return badge("warn", r.chapter ? `Review · ch ${r.chapter}` : "Review");
+    if (r.source === "agent") {
+      const when = r.at ? new Date(r.at) : null;
+      const title = `Added by a worker from ${r.from}${when && !isNaN(when.getTime()) ? ` · ${when.toLocaleString()}` : ""} · edit or remove it in the setup wizard's style rules`;
+      return h("span", { class: "sw-badge busy sw-rule-src", title }, h("span", { class: "sw-rule-src-text" }, `Added from ${r.from}`));
+    }
     return badge("", "Setup");
   }
 

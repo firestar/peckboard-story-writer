@@ -146,7 +146,7 @@ describe("manifest", () => {
     });
   });
 
-  it("declares the ten worker tools, each worker_allowed and name-valid", () => {
+  it("declares the eleven worker tools, each worker_allowed and name-valid", () => {
     const names = manifest.mcp_tools.map((t: any) => t.name);
     expect(names).toEqual([
       "story_get_brief",
@@ -154,6 +154,7 @@ describe("manifest", () => {
       "story_submit_records",
       "story_submit_chapter",
       "story_update_state",
+      "story_add_style_rules",
       "story_report_review",
       "story_cold_read_get_text",
       "story_submit_cold_read",

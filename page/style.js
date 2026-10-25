@@ -214,6 +214,10 @@ h1, h2, h3 { margin: 0; line-height: 1.3; }
 .sw-list-row > .sw-input, .sw-list-row > .sw-textarea { flex: 1; }
 .sw-list-row .sw-textarea { min-height: 38px; }
 .sw-list-num { flex: none; width: 22px; padding-top: 7px; text-align: right; color: var(--text3); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.sw-list-cell { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.sw-list-cell > .sw-input, .sw-list-cell > .sw-textarea { width: 100%; }
+.sw-rule-src { align-self: flex-start; max-width: 100%; font-weight: 500; }
+.sw-rule-src-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sw-empty { padding: 18px; border: 1px dashed var(--border-strong); border-radius: 10px; text-align: center; color: var(--text3); font-size: .8125rem; }
 .sw-add-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 

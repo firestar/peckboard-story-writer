@@ -1,7 +1,8 @@
-// The ten worker-facing MCP tools (story_get_brief, story_get_records,
+// The eleven worker-facing MCP tools (story_get_brief, story_get_records,
 // story_submit_records, story_submit_chapter, story_update_state,
-// story_report_review, story_cold_read_get_text, story_submit_cold_read,
-// story_submit_cold_read_fixes, story_submit_owner_review_fixes). Each is
+// story_add_style_rules, story_report_review, story_cold_read_get_text,
+// story_submit_cold_read, story_submit_cold_read_fixes,
+// story_submit_owner_review_fixes). Each is
 // scoped to the calling project (`requireProjectId`), validates its input
 // against src/schemas.ts (the same
 // schemas the manifest declares), persists through the typed doc store
@@ -21,6 +22,7 @@ import { validate } from "./validate";
 import { SCHEMAS } from "./schemas";
 import {
   addFeedback,
+  addStyleRules,
   applyRecordsUpdate,
   getBrief,
   getChapter,
@@ -33,7 +35,6 @@ import {
   getPipelineState,
   getRecordSection,
   getReview,
-  getRules,
   getSessionRole,
   putBrief,
   putChapter,
@@ -45,6 +46,7 @@ import {
   setSessionRole,
   upsertSection,
 } from "./docs";
+import { BriefData, briefView } from "./briefView";
 import { chapterFileName, writeBrief, writeChapter, writeColdRead, writeOwnerReview, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
 import { isOwnerRevisionId, redraftPending, underRevision } from "./ownerReview";
 import { Brief, ChapterDoc, ColdReadDoc, ColdReadItem, OwnerNoteAction, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, StageId, nowIso } from "./types";
@@ -84,16 +86,17 @@ function mirrorChangedSections(projectId: string, sections: RecordSection[]): vo
 }
 
 /// Get this story's brief (setup-wizard answers), its durable style rules,
-/// feedback recorded so far, and the pipeline state. `null` brief means the
-/// wizard hasn't been run yet.
+/// feedback recorded so far, owner review rounds being redrafted, and the
+/// pipeline state — by default as a summary under `max_chars`, or the
+/// named `sections` in full (src/briefView.ts). `full: true` is the old
+/// unsummarized dump. `null` brief means the wizard hasn't been run yet.
 export function toolGetBrief(args: any, _context: any): any {
   validate(SCHEMAS.story_get_brief, args ?? {});
   const projectId = requireProjectId();
   guardSession(projectId, "context");
   // SW-3: prompt pack
-  return {
+  const data: BriefData = {
     brief: getBrief(projectId),
-    rules: getRules(projectId),
     feedback: getFeedback(projectId),
     state: getPipelineState(projectId),
     // Owner review rounds being redrafted right now (SW-12): every note in
@@ -104,6 +107,30 @@ export function toolGetBrief(args: any, _context: any): any {
         .map((r) => ({ chapter: doc.chapter, round: r.round, revision: r.decided_revision ?? r.chapter_revision, notes: r.notes, summary: r.summary ?? null })),
     ),
   };
+  return briefView(data, args ?? {});
+}
+
+/// Append story-wide style rules (SW-16) — written straight into the brief,
+/// not proposed as a draft: they come from the owner's own review notes, and
+/// a proposal step only stalled the cards waiting on them. The owner sees
+/// each one tagged "added from <source>" in the wizard and dashboard and
+/// edits or deletes it like their own. Existing rules are never touched.
+export function toolAddStyleRules(args: any, _context: any): any {
+  validate(SCHEMAS.story_add_style_rules, args);
+  if (args.rules.length === 0) throw new Error("rules: pass at least one rule");
+  const projectId = requireProjectId();
+  guardSession(projectId, "context");
+  const source = String(args.source).trim();
+  if (!source) throw new Error("source: say where the rules come from, e.g. \"story/reviews/chapter-01-owner.md:41\"");
+  const sessionId = callerScope().session_id;
+  const cardId = typeof args.card_id === "string" && args.card_id.trim() ? args.card_id.trim() : null;
+  const result = addStyleRules(projectId, args.rules, {
+    source,
+    ...(cardId ? { card_id: cardId } : {}),
+    ...(sessionId ? { session_id: sessionId } : {}),
+  });
+  if (result.added.length > 0) writeBrief(result.brief);
+  return { added: result.added, skipped_duplicates: result.skipped_duplicates, total: result.total };
 }
 
 /// Get the story's living records (character sheets, relationships,
@@ -252,6 +279,8 @@ export function toolSubmitChapter(args: any, _context: any): any {
 /// Report per-stage progress (status, a status note, stage-specific data).
 /// The top-level `stage` is owned by the pipeline engine (src/pipeline.ts),
 /// so a worker's `stage` only selects which per-stage entry to update.
+/// `data` shallow-merges into state.data: keys not sent are kept, a key
+/// sent as null is deleted; `replace: true` swaps state.data wholesale.
 export function toolUpdateState(args: any, _context: any): any {
   validate(SCHEMAS.story_update_state, args ?? {});
   const projectId = requireProjectId();
@@ -269,11 +298,18 @@ export function toolUpdateState(args: any, _context: any): any {
     };
   }
 
+  const incoming: Record<string, unknown> = args?.data && typeof args.data === "object" ? args.data : {};
+  const data: Record<string, unknown> = args?.replace === true ? {} : { ...existing.data };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value === null) delete data[key];
+    else data[key] = value;
+  }
+
   const next: PipelineState = {
     stage: existing.stage,
     stages,
     note: typeof args?.note === "string" ? args.note : existing.note,
-    data: { ...existing.data, ...(args?.data && typeof args.data === "object" ? args.data : {}) },
+    data,
     updated_at: nowIso(),
   };
   putPipelineState(projectId, next);

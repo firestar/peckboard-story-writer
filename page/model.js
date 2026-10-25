@@ -460,6 +460,15 @@ export function stripBlankRows(brief) {
   }
   return changed;
 }
+/// The provenance of an agent-added style rule (SW-16 story_add_style_rules),
+/// matched by trimmed, case-insensitive text — null for the owner's own
+/// rules (and for an agent rule the owner has since rewritten).
+export function ruleSource(brief, text) {
+  const sources = (brief && Array.isArray(brief.rule_sources) && brief.rule_sources) || [];
+  const key = String(text || "").trim().toLowerCase();
+  if (!key) return null;
+  return sources.find((s) => s && String(s.rule || "").trim().toLowerCase() === key) || null;
+}
 
 // ── Element lifecycle view ───────────────────────────────────────────────
 

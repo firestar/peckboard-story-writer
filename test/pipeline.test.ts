@@ -1084,7 +1084,7 @@ describe("pipeline engine: AI-generate elements", () => {
     finishCard(cards, styleCard.id);
 
     // Owner reviews both drafts in the wizard and approves them.
-    const reviewed = invoke("story_get_brief").brief;
+    const reviewed = invoke("story_get_brief", { full: true }).brief;
     reviewed.status.premise = "approved";
     reviewed.status.style_rules = "approved";
     authed("POST", "/wizard", { brief: reviewed });

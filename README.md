@@ -9,11 +9,12 @@ pilot chapter -> owner review gate -> chapters in parallel -> review passes
 (structure, character, pacing, line, copyedit, plus AI-tell / echo-word /
 sentence-shape) -> final export.
 
-Worker sessions pull context and push results through ten MCP tools —
+Worker sessions pull context and push results through eleven MCP tools —
 `story_get_brief`, `story_get_records`, `story_submit_records`,
-`story_submit_chapter`, `story_update_state`, `story_report_review`, the
-cold-read trio `story_cold_read_get_text` / `story_submit_cold_read` /
-`story_submit_cold_read_fixes`, and `story_submit_owner_review_fixes` — and
+`story_submit_chapter`, `story_update_state`, `story_add_style_rules`,
+`story_report_review`, the cold-read trio `story_cold_read_get_text` /
+`story_submit_cold_read` / `story_submit_cold_read_fixes`, and
+`story_submit_owner_review_fixes` (see [Worker tools](#worker-tools)) — and
 the plugin stores everything (`data_store`) and mirrors chapters into the
 project's `story/` folder (`project_files_write`).
 
@@ -82,6 +83,44 @@ Both default to Claude Opus 5.5
 prose. Judge any writer model by a pilot chapter the owner actually plays; switch models when a
 pilot fails rather than adding more rules.
 
+## Worker tools
+
+Every tool is project-scoped and `worker_allowed`; inputs are validated
+against `src/schemas.ts` (the same schemas the manifest declares).
+
+| Tool | Params | Does |
+| --- | --- | --- |
+| `story_get_brief` | `sections?: string[]`, `max_chars?: integer` (5000–250000, default 20000), `full?: boolean` | No args: a summary under ~20k chars — basics, **all** style rules, banned words, the newest 8 feedback entries (clipped), owner review rounds without their notes, the state with `data` keys only, long elements clipped and characters/relationships/endings as id + name, plus a `hint`. `sections` returns those in full: `basics`, `rules` (+ `rule_sources`), `banned_words` (+ built-in list), `feedback`, `owner_reviews`, `state`, `elements`, `lesson_overrides`, `elements.<element>` (`premise`, `plot_outline`, `setting`, `characters`, `relationships`, `themes`, `endings`, `style_rules`, `banned_words`), or one item `elements.characters.<id>` / `elements.relationships.<id>` / `elements.endings.<id>`. Unknown names error with the valid list. Anything cut to fit `max_chars` is listed under `truncated: [{section, note, fetch}]` with the exact call that gets it. `full: true` is the old unsummarized dump (100k+ chars on a real story — the harness spills that to a file sandboxed workers can't read). |
+| `story_get_records` | `sections?: RecordSection[]`, `chapter?: integer` | Living records, optionally some sections / chapter-capped. |
+| `story_submit_records` | `records: {<section>: item[]}` | Upsert-merge by identity. |
+| `story_submit_chapter` | `chapter`, `markdown`, `recap?`, `records?`, `unit?` | Store a chapter (new revision); `unit` binds it to its card. |
+| `story_update_state` | `stage?`, `status?`, `note?`, `data?: object`, `replace?: boolean` | Per-stage status/note. `data` **shallow-merges** into `state.data`: keys you leave out are kept, a key set to `null` is deleted; `replace: true` swaps `state.data` wholesale. |
+| `story_add_style_rules` | `rules: string[]` (1–20, each ≤ 2000 chars), `source: string`, `card_id?: string` | Append story-wide style rules (see below). Returns `{added, skipped_duplicates, total}`. |
+| `story_report_review` | `chapter`, `pass`, `verdict`, `notes`, `rule?` | One review pass's verdict; `rule` is appended to the style rules. |
+| `story_cold_read_get_text` | `chapter` | FRESH sessions only: the chapter + chapters 1..N−1. |
+| `story_submit_cold_read` | `chapter`, `items`, `first_three_lines?`, `characters` | FRESH sessions only: the cold-read report. |
+| `story_submit_cold_read_fixes` | `chapter`, `fixes: [{item, fix}]` | item → fix for every cold-read item. |
+| `story_submit_owner_review_fixes` | `chapter`, `round`, `resolutions: [{note, action, how}]` | How each owner note was handled. |
+
+`story_add_style_rules` writes straight into the brief's style rules — no
+`draft_*` proposal step. Decision (delegated by the owner, 2026-10-25):
+these rules come from the owner's own review notes, and a proposal step
+just stalled the cards waiting for them (VN2: four cards in a row). The
+owner's existing rules are never touched; a rule already present after
+trimming and ignoring case is skipped. Each added rule's provenance
+(`source` such as `story/reviews/chapter-01-owner.md:41`, the calling
+session id, the optional `card_id`, and a timestamp) is kept in
+`brief.rule_sources`. Owner control: the wizard's style-rules step and the
+dashboard's rules panel tag each such rule **Added from <source>**, and the
+owner edits or deletes it like their own — the story's rule list stays
+editable in the setup view even after the pipeline has started. A rule the
+owner rewrites or deletes loses its tag. New rules reach every card
+rendered after the call (writing, revision, cold-read fix, owner-review
+revision, review), the same way owner rules do. Size guard: the store
+chunks any doc past 240 KiB, so the brief can't hit the host's 256 KiB
+put limit; on top of that a call is capped at 20 rules of ≤ 2000 chars and
+the whole rule list at 60,000 chars (an over-cap call fails and writes
+nothing).
 ## Prompt pack
 
 `src/prompts/` compiles the built-in writing craft into card templates:
@@ -205,7 +244,10 @@ SW-10: [models + grouped style guide](docs/screenshots/wizard-style-rules-models
 [§1D reader rules](docs/screenshots/wizard-style-rules-reader-pov.png),
 [don't state the obvious](docs/screenshots/wizard-style-rules-obvious.png),
 [the same in dark](docs/screenshots/wizard-dark-style-rules-obvious.png),
-[review with the writer model](docs/screenshots/wizard-review-models.png).
+[review with the writer model](docs/screenshots/wizard-review-models.png);
+SW-16: [agent-added rules, tagged and editable after start](docs/screenshots/wizard-style-rules-agent-added.png),
+[after the owner deleted one and rewrote one](docs/screenshots/wizard-style-rules-agent-edited.png),
+[dark at 420 px](docs/screenshots/wizard-dark-mobile-style-rules-agent.png).
 
 ## Pipeline dashboard (Story tab, once started)
 
@@ -315,7 +357,9 @@ card's own description.
 
 - The engine owns the top-level pipeline `stage` (mirrored into the
   `state` doc for the dashboard); `story_update_state` only records
-  per-stage status/notes/data.
+  per-stage status/notes and merges `data` (the generate stage reads and
+  then drops its own `draft_<element>` key; nothing relies on a wholesale
+  replace).
 - `card.step.after` re-runs the engine when one of its cards reaches
   `done`/`wont_do`, reconciling from the event payload alone; `timer.tick`
   is the safety net, sweeping unfinished projects round-robin (from a small
@@ -428,4 +472,5 @@ owner review (SW-12): [gate, round 1](docs/screenshots/review-gate-round-1.png),
 [dark rounds](docs/screenshots/review-dark-rounds.png);
 approve waits for unsent notes (SW-15): [gate](docs/screenshots/review-gate-unsent-notes.png),
 [pilot drawer](docs/screenshots/review-drawer-approve-held.png),
-[Approve chapter](docs/screenshots/review-chapter-approve-held.png).
+[Approve chapter](docs/screenshots/review-chapter-approve-held.png);
+agent-added style rules (SW-16): [dashboard rules panel](docs/screenshots/dashboard-rules-agent-added.png).

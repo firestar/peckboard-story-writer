@@ -51,6 +51,23 @@ function msg(e) {
   return e && e.message ? e.message : String(e);
 }
 
+/// "Added from <source>" under a style rule a worker added (SW-16
+/// story_add_style_rules); the owner edits or removes it like any rule.
+function ruleTag(src) {
+  if (!src) return null;
+  const when = src.added_at ? new Date(src.added_at) : null;
+  const title = [
+    `Added by a worker from ${src.source}`,
+    when && !isNaN(when.getTime()) ? when.toLocaleString() : null,
+    src.card_id ? `card ${src.card_id}` : null,
+    src.session_id ? `session ${src.session_id}` : null,
+    "Edit or remove it like your own rules.",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return h("span", { class: "sw-badge busy sw-rule-src", title }, h("span", { class: "sw-rule-src-text" }, `Added from ${src.source}`));
+}
+
 function attrEscape(s) {
   return String(s).replace(/["\\]/g, "\\$&");
 }
@@ -78,6 +95,11 @@ function plain(md, title) {
 export function mountWizard(container, opts) {
   const { defaults, P } = opts;
   const readOnly = !!opts.readOnly;
+  // Once the pipeline has started the setup is read-only, except the story's
+  // own rule list: workers add rules mid-pipeline (story_add_style_rules) and
+  // the owner must still be able to edit or remove them (SW-16).
+  const canSave = (path) => !readOnly || path === "elements.style_rules";
+  let touchedAfterStart = false;
   const maxChapters = defaults.max_chapters;
 
   let server = opts.state;
@@ -108,7 +130,8 @@ export function mountWizard(container, opts) {
   // ── saving ─────────────────────────────────────────────────────────────
 
   function markDirty(path) {
-    if (readOnly || destroyed) return;
+    if (destroyed || !canSave(path)) return;
+    if (readOnly) touchedAfterStart = true;
     dirty.add(path);
     saveError = null;
     paintSave();
@@ -119,7 +142,7 @@ export function mountWizard(container, opts) {
   async function flushSave() {
     clearTimeout(saveTimer);
     while (saving) await saving.catch(() => {});
-    if (readOnly || destroyed) return;
+    if (destroyed || (readOnly && dirty.size === 0)) return;
     if (dirty.size === 0 && hasServerBrief) return;
     // The first save creates the brief, so it carries everything.
     const paths = hasServerBrief ? Array.from(dirty) : M.allPaths(draft).concat(Array.from(dirty));
@@ -169,7 +192,7 @@ export function mountWizard(container, opts) {
   function saveIndicator() {
     let cls = "";
     let text;
-    if (readOnly) text = "Read-only";
+    if (readOnly && !touchedAfterStart) text = "Read-only";
     else if (saveError) (cls = "error"), (text = "Couldn't save");
     else if (Object.keys(fieldErrors).length) (cls = "error"), (text = "Fix the marked field to save it");
     else if (inflight.size) (cls = "saving"), (text = "Saving…");
@@ -413,7 +436,13 @@ export function mountWizard(container, opts) {
           { class: "sw-main" },
           notice ? buildNotice() : null,
           readOnly && step !== "review"
-            ? banner("info", "The pipeline has started, so the setup is read-only.", null)
+            ? banner(
+                "info",
+                step === "style_rules"
+                  ? "The pipeline has started, so the setup is read-only — except this story's rules below."
+                  : "The pipeline has started, so the setup is read-only.",
+                null,
+              )
             : null,
           buildStep(),
           buildFooter(),
@@ -679,33 +708,35 @@ export function mountWizard(container, opts) {
       focusFid = `${fid}.${at}`;
       onChange(next, false);
     };
-    const rows = items.map((it, i) =>
-      h(
+    const rows = items.map((it, i) => {
+      const field = h(o.multiline ? "textarea" : "input", {
+        class: o.multiline ? "sw-textarea sm" : "sw-input",
+        rows: o.multiline ? 2 : null,
+        dataset: { fid: `${fid}.${i}` },
+        disabled: o.disabled,
+        value: it,
+        placeholder: o.placeholder,
+        "aria-label": `${o.itemLabel} ${i + 1}`,
+        oninput: (e) => {
+          const next = o.get().slice();
+          next[i] = e.target.value;
+          onChange(next, true);
+        },
+        onkeydown: o.multiline
+          ? null
+          : (e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                add(i + 1);
+              }
+            },
+      });
+      const tag = o.tag ? o.tag(it, i) : null;
+      return h(
         "div",
         { class: "sw-list-row" },
         h("span", { class: "sw-list-num", "aria-hidden": "true" }, `${i + 1}.`),
-        h(o.multiline ? "textarea" : "input", {
-          class: o.multiline ? "sw-textarea sm" : "sw-input",
-          rows: o.multiline ? 2 : null,
-          dataset: { fid: `${fid}.${i}` },
-          disabled: o.disabled,
-          value: it,
-          placeholder: o.placeholder,
-          "aria-label": `${o.itemLabel} ${i + 1}`,
-          oninput: (e) => {
-            const next = o.get().slice();
-            next[i] = e.target.value;
-            onChange(next, true);
-          },
-          onkeydown: o.multiline
-            ? null
-            : (e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  add(i + 1);
-                }
-              },
-        }),
+        tag ? h("div", { class: "sw-list-cell" }, field, tag) : field,
         o.disabled
           ? null
           : h("button", {
@@ -715,8 +746,8 @@ export function mountWizard(container, opts) {
               html: ICON.x,
               onclick: () => onChange(o.get().filter((_, j) => j !== i), false),
             }),
-      ),
-    );
+      );
+    });
     return h(
       "div",
       null,
@@ -1030,7 +1061,7 @@ export function mountWizard(container, opts) {
     let body;
     switch (meta.kind) {
       case "style":
-        body = styleEditor(show, disabled, modeBlock);
+        body = styleEditor(show, disabled, modeBlock, v.generating);
         break;
       case "banned":
         body = bannedEditor(show, disabled, modeBlock);
@@ -1687,7 +1718,7 @@ export function mountWizard(container, opts) {
     );
   }
 
-  function styleEditor(show, disabled, modeBlock) {
+  function styleEditor(show, disabled, modeBlock, generating) {
     const vn = fmt() === "vn";
     const entries = defaults.style_guide.filter((e) => vn || !e.vn_only);
     const overrides = draft.lesson_overrides || {};
@@ -1744,8 +1775,11 @@ export function mountWizard(container, opts) {
             h(
               "p",
               { class: "sw-sub" },
-              "Extra rules on top of the guide; they win where the two disagree. Feedback you give on the pilot or any chapter is added here too.",
+              "Extra rules on top of the guide; they win where the two disagree. Feedback you give on the pilot or any chapter is added here too. Rules a worker added from your review notes are tagged with where they came from — edit or remove them like your own.",
             ),
+            readOnly
+              ? h("p", { class: "sw-help" }, "The pipeline has started, but you can still edit or remove this story's rules. Cards created from now on use the new list.")
+              : null,
           ),
         ),
         modeBlock,
@@ -1763,7 +1797,8 @@ export function mountWizard(container, opts) {
                 itemLabel: "rule",
                 multiline: true,
                 placeholder: "e.g. Mara never swears; she goes quiet instead.",
-                disabled,
+                tag: (text) => ruleTag(M.ruleSource(draft, text)),
+                disabled: !!generating,
                 emptyText: "No story-specific rules yet — the built-in guide applies as is.",
               },
             )
@@ -2127,6 +2162,11 @@ export function mountWizard(container, opts) {
       render();
     },
     destroy() {
+      // Leaving the read-only setup right after editing a rule: send it now
+      // rather than drop it with the debounce timer.
+      if (readOnly && dirty.size && !saving) {
+        postJSON(`${P}/wizard`, { brief: M.buildPatch(draft, Array.from(dirty)) }).catch(() => {});
+      }
       destroyed = true;
       clearTimeout(saveTimer);
       document.removeEventListener("visibilitychange", onHide);

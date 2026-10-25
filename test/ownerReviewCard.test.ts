@@ -38,7 +38,7 @@ describe("owner review revision card", () => {
     const card = renderOwnerReviewCard({ chapter: 1, round: 1, revision: 1, brief: BRIEF, notes });
     expect(card.title).toBe("Revise pilot chapter 1 from owner review — round 1");
     expect(card.description.length).toBeLessThanOrEqual(MAX_DESCRIPTION_CHARS);
-    expect(card.description).toMatch(/\(\d+ more notes — full list via story_get_brief → owner_reviews\)/);
+    expect(card.description).toMatch(/\(\d+ more notes — full list via story_get_brief \{sections:\["owner_reviews"\]\}\)/);
   });
 });
 

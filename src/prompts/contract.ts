@@ -1,7 +1,6 @@
 // The "use story_* tools to pull context and push results" contract text
-// embedded in every pipeline card. The six MCP tools are fixed (SW-1/SW-2);
-// this just names them consistently per stage so a worker never has to guess
-// which tool to call.
+// embedded in every pipeline card. This names the tools consistently per
+// stage so a worker never has to guess which tool to call.
 
 export const TOOLS = {
   brief: "story_get_brief",
@@ -9,11 +8,22 @@ export const TOOLS = {
   submitRecords: "story_submit_records",
   submitChapter: "story_submit_chapter",
   updateState: "story_update_state",
+  addRules: "story_add_style_rules",
   report: "story_report_review",
 } as const;
 
 export function chapterPath(n: number): string {
   return `story/chapters/chapter-${String(n).padStart(2, "0")}.md`;
+}
+
+/// The owner review file for a chapter (src/files.ts writeOwnerReview).
+export function ownerReviewPath(n: number): string {
+  return `story/reviews/chapter-${String(n).padStart(2, "0")}-owner.md`;
+}
+
+/// story_get_brief call for the named sections (the default is a summary).
+export function briefCall(...sections: string[]): string {
+  return `${TOOLS.brief} {sections:[${sections.map((s) => `"${s}"`).join(", ")}]}`;
 }
 
 /// The pipeline-state `data` key a generate card pushes its draft under.
@@ -82,6 +92,7 @@ export function contract(kind: StageKind, x: ContractInput = {}): string {
         `Read the current chapter ${n} text (${chapterPath(n)}) and the feedback above.`,
         `Resubmit the revised chapter with ${TOOLS.submitChapter} {chapter:${n}, markdown, recap, records}.`,
         `Report progress with ${TOOLS.updateState} {note:"chapter ${n} revised: <what changed>"}.`,
+        `If the feedback asks for a rule for the whole story, also add it with ${TOOLS.addRules} {rules:["..."], source:"<where it was asked for>"} so every later card follows it.`,
       );
       break;
     }

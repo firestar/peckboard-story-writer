@@ -270,7 +270,7 @@ describe("dispatch: mcp.tool.invoke", () => {
     });
     invoke("story_report_review", { chapter: 3, pass: "copyedit", verdict: "pass", notes: "clean", rule: "No present-tense flashbacks." });
     const got = invoke("story_get_brief");
-    expect(got.brief.elements.style_rules).toEqual(["No present-tense flashbacks."]);
+    expect(invoke("story_get_brief", { full: true }).brief.elements.style_rules).toEqual(["No present-tense flashbacks."]);
     expect(got.rules).toEqual(["No present-tense flashbacks."]);
     expect(got.feedback).toMatchObject([{ text: "No present-tense flashbacks.", appended_to_rules: true }]);
     expect(files["story/brief.md"]).toContain("No present-tense flashbacks.");

@@ -443,7 +443,7 @@ function materializeFeedbackRevisions(ctx: Ctx): void {
     if (!hasBudget(ctx.budget)) return;
     const feedbackId = unit.id.slice("revision:fb:".length);
     const fb = ctx.feedback.find((f) => f.id === feedbackId);
-    const text = fb?.text ?? "Owner feedback — see story_get_brief.";
+    const text = fb?.text ?? 'Owner feedback — see story_get_brief {sections:["feedback"]}.';
     materialize(ctx, unit, { id: unit.id, kind: "revision", chapter: unit.chapter, priority: 1, feedbackText: text });
   }
 }

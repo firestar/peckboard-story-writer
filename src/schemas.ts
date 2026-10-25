@@ -1,9 +1,11 @@
-// Input JSON schemas for the six worker-facing MCP tools — the single
+// Input JSON schemas for the worker-facing MCP tools — the single
 // source of truth the manifest declares to agents (src/manifest.ts) and
 // src/tools.ts validates calls against (src/validate.ts). Keeping one copy
 // means a tool's declared contract and its enforced contract can't drift.
 
 import type { Schema } from "./validate";
+import { DEFAULT_MAX_CHARS, MAX_MAX_CHARS, MIN_MAX_CHARS } from "./briefView";
+import { MAX_RULE_CHARS, MAX_RULES_PER_CALL } from "./docs";
 import {
   COLD_READ_CATEGORIES,
   MAX_UNEXPLAINED_PER_SCENE,
@@ -97,7 +99,32 @@ const RECORDS_UPDATE_SCHEMA: Schema = {
 };
 
 export const SCHEMAS = {
-  story_get_brief: EMPTY_SCHEMA,
+  story_get_brief: {
+    type: "object",
+    properties: {
+      sections: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+        description:
+          "Return these sections in full instead of the default summary: basics, rules, banned_words, feedback, " +
+          "owner_reviews, state, elements, lesson_overrides, or one element: elements.premise, elements.plot_outline, " +
+          "elements.setting, elements.characters, elements.relationships, elements.themes, elements.endings, " +
+          "elements.style_rules, elements.banned_words — or one item by id: elements.characters.<id>, " +
+          "elements.relationships.<id>, elements.endings.<id>. An unknown name is an error listing the valid ones.",
+      },
+      max_chars: {
+        type: "integer",
+        minimum: MIN_MAX_CHARS,
+        description: `Cap on the result's size in characters (default ${DEFAULT_MAX_CHARS}, max ${MAX_MAX_CHARS}). Anything cut is listed under "truncated" with the call that fetches it.`,
+      },
+      full: {
+        type: "boolean",
+        description: "Return the whole brief, every feedback entry, every owner note and the full pipeline state, unsummarized and uncapped (can exceed 100k characters).",
+      },
+    },
+    required: [],
+    additionalProperties: false,
+  } as Schema,
 
   story_get_records: {
     type: "object",
@@ -151,9 +178,38 @@ export const SCHEMAS = {
       stage: { type: "string", enum: STAGES, description: "Which stage this status/note is about (does not move the pipeline)." },
       status: { type: "string", enum: STAGE_STATUSES, description: "This stage's status." },
       note: { type: "string", description: "Short status note shown on the dashboard." },
-      data: { type: "object", description: "Stage-specific structured data." },
+      data: {
+        type: "object",
+        description:
+          "Stage-specific structured data, shallow-merged into the stored state.data: send only the keys you're " +
+          "changing (e.g. {\"draft_setting\": ...}); keys you leave out are kept; a key set to null is deleted.",
+      },
+      replace: {
+        type: "boolean",
+        description: "Replace state.data wholesale with `data` instead of merging (drops every key not sent). Default false.",
+      },
     },
     required: [],
+    additionalProperties: false,
+  } as Schema,
+
+  story_add_style_rules: {
+    type: "object",
+    properties: {
+      rules: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+        maxItems: MAX_RULES_PER_CALL,
+        description: `Story-wide style rules to append, one instruction each (max ${MAX_RULE_CHARS} characters). A rule already present (ignoring case and surrounding whitespace) is skipped.`,
+      },
+      source: {
+        type: "string",
+        minLength: 1,
+        description: 'Where the rules come from, shown to the owner as "added from <source>", e.g. "story/reviews/chapter-01-owner.md:41".',
+      },
+      card_id: { type: "string", description: "Optional: the id of the card you're working, stored with each rule." },
+    },
+    required: ["rules", "source"],
     additionalProperties: false,
   } as Schema,
 

@@ -30,9 +30,10 @@ const DESCRIPTION =
   "Approve or Request changes — every note goes to a revision card, the writer records how " +
   "each was handled, the redraft is cold-read again and comes back as the next round. Worker " +
   "sessions pull context and push results through story_get_brief, story_get_records, " +
-  "story_submit_records, story_submit_chapter, story_update_state, story_report_review, " +
-  "story_cold_read_get_text, story_submit_cold_read, story_submit_cold_read_fixes and " +
-  "story_submit_owner_review_fixes; the writer (default Claude Opus 5.5) and reviewer models " +
+  "story_submit_records, story_submit_chapter, story_update_state, story_add_style_rules, " +
+  "story_report_review, story_cold_read_get_text, story_submit_cold_read, " +
+  "story_submit_cold_read_fixes and story_submit_owner_review_fixes; the writer (default " +
+  "Claude Opus 5.5) and reviewer models " +
   "are configurable below.";
 
 // Inline SVG (lucide "book") for the project tab icon; rendered sandboxed.
@@ -54,7 +55,7 @@ export function manifestJson(): string {
       "contribute_sidebar", // the project_items tab below
       "data_store", // brief / records / per-chapter docs / pipeline state
       "cards_write", // advance pipeline cards (peckboard_update_card)
-      "provide_mcp_tools", // the ten worker-facing story_* tools
+      "provide_mcp_tools", // the eleven worker-facing story_* tools
       "project_files_read", // read story/ files already written
       "project_files_write", // write chapters/records into story/ (tool-invocation only)
       "models_read", // model picker in the wizard UI
@@ -133,9 +134,16 @@ export function manifestJson(): string {
         description:
           "Get this story's brief: the setup-wizard answers (title, genre, format, chapter " +
           "count, POV/tense, tone, audience/rating, premise, plot outline, setting/world, " +
-          "characters, relationships, themes, endings/routes/choices, style rules, banned " +
-          "words), its current style rules, any owner/review feedback recorded so far, and the " +
-          "pipeline state. Call this first in any story-writing or reviewing turn.",
+          "characters, relationships, themes, endings/routes/choices), its style rules and banned " +
+          "words, owner/review feedback, owner review rounds being redrafted, and the pipeline " +
+          "state. Call this first in any story-writing or reviewing turn. With no arguments it " +
+          "returns a summary under ~20k characters: basics, ALL style rules, banned words, the " +
+          "newest feedback, a state summary, and long elements clipped or listed as id + name. " +
+          "Fetch what you need in full with sections, e.g. {sections:[\"elements.plot_outline\", " +
+          "\"elements.characters\"]}, {sections:[\"feedback\"]}, {sections:[\"owner_reviews\"]}, " +
+          "{sections:[\"elements.characters.<id>\"]}. Anything cut is listed under \"truncated\" " +
+          "with the call that fetches it; max_chars raises the cap; full:true returns the old " +
+          "unsummarized dump (can exceed 100k characters).",
         input_schema: SCHEMAS.story_get_brief,
         worker_allowed: true,
       },
@@ -176,10 +184,27 @@ export function manifestJson(): string {
         name: "story_update_state",
         description:
           "Report progress on a pipeline stage: its status, a short status note for the " +
-          "dashboard, and any structured data (e.g. an element draft). The current stage itself " +
-          "is owned by the plugin's stage machine (driven by card.step.after / timer.tick) — " +
-          "this tool never moves it.",
+          "dashboard, and any structured data (e.g. an element draft). `data` is shallow-merged " +
+          "into the stored state data: send only the keys you're changing — keys you leave out " +
+          "are kept, a key set to null is deleted; replace:true swaps the whole data object. The " +
+          "current stage itself is owned by the plugin's stage machine (driven by card.step.after " +
+          "/ timer.tick) — this tool never moves it.",
         input_schema: SCHEMAS.story_update_state,
+        worker_allowed: true,
+      },
+      {
+        name: "story_add_style_rules",
+        description:
+          "Append story-wide style rules to the brief — e.g. the rules an owner review asks " +
+          "for. Written directly (not as a draft for approval): the owner's existing rules are " +
+          "kept untouched, a rule already present (ignoring case and surrounding whitespace) is " +
+          "skipped, and each added rule stores its source (e.g. " +
+          "\"story/reviews/chapter-01-owner.md:41\"), your session/card id and a timestamp. The " +
+          "owner sees every agent-added rule tagged \"added from <source>\" in the wizard and " +
+          "dashboard and can edit or delete it like their own. Every card rendered after the call " +
+          "(writing, revision, cold-read fix, review) carries the new rules. Returns {added, " +
+          "skipped_duplicates, total}.",
+        input_schema: SCHEMAS.story_add_style_rules,
         worker_allowed: true,
       },
       {

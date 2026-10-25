@@ -3,6 +3,8 @@
 // and GET /cards return. Pure functions only (no DOM, no bridge) so vitest
 // can cover them.
 
+import { ruleSource } from "./model.js";
+
 // ── Catalogs ─────────────────────────────────────────────────────────────
 
 export const PASSES = [
@@ -793,12 +795,16 @@ export function recapList(state) {
 // ── Rules, overrides, feedback ───────────────────────────────────────────
 
 /// The story's rules with where each came from: the wizard ("setup"), the
-/// owner's feedback, or a review pass's durable rule.
+/// owner's feedback, a review pass's durable rule, or a worker's
+/// story_add_style_rules call ("agent", with `from` = its source).
 export function storyRules(state) {
-  const rules = (state && state.brief && state.brief.elements && state.brief.elements.style_rules) || [];
+  const brief = state && state.brief;
+  const rules = (brief && brief.elements && brief.elements.style_rules) || [];
   const pool = ((state && state.feedback) || []).filter((f) => f.appended_to_rules);
   const used = new Set();
   return rules.map((text) => {
+    const agent = ruleSource(brief, text);
+    if (agent) return { text, source: "agent", from: agent.source, chapter: null, at: agent.added_at || null };
     const fb = pool.find((f) => !used.has(f.id) && f.text === text);
     if (fb) used.add(fb.id);
     return { text, source: fb ? fb.source : "setup", chapter: fb ? fb.chapter : null, at: fb ? fb.at : null };

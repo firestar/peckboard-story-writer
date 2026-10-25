@@ -5,6 +5,7 @@ import { skip, allow, cancel, errMsg } from "./verdict";
 import { serveHttp, serveAuthed } from "./http";
 import { onCardStepAfter, onTimerTick } from "./pipeline";
 import {
+  toolAddStyleRules,
   toolColdReadGetText,
   toolGetBrief,
   toolGetRecords,
@@ -27,6 +28,7 @@ const TOOLS: Record<string, (args: any, context: any) => any> = {
   story_submit_records: toolSubmitRecords,
   story_submit_chapter: toolSubmitChapter,
   story_update_state: toolUpdateState,
+  story_add_style_rules: toolAddStyleRules,
   story_report_review: toolReportReview,
   story_cold_read_get_text: toolColdReadGetText,
   story_submit_cold_read: toolSubmitColdRead,

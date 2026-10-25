@@ -19,6 +19,8 @@ import {
   RecordSection,
   PipelineState,
   ReviewDoc,
+  RuleSource,
+  ruleKey,
   ReviewPass,
   defaultEngineState,
   defaultPipelineState,
@@ -39,11 +41,75 @@ export function getBrief(projectId: string): Brief | null {
 export function putBrief(projectId: string, brief: Brief): void {
   putDoc("brief", projectId, brief);
 }
-
 /// The story's durable style rules (wizard rules plus any appended by
-/// `story_report_review`'s `rule`); empty before the wizard has run.
+/// `story_report_review`'s `rule` or `story_add_style_rules`); empty before
+/// the wizard has run.
 export function getRules(projectId: string): string[] {
   return getBrief(projectId)?.elements?.style_rules ?? [];
+}
+
+/// Size guard for agent-added rules (SW-16). The store chunks any doc past
+/// 240 KiB, so the brief can't hit the host's 256 KiB put limit, but every
+/// rule lands on every card: cap single rules, calls and the whole list so
+/// a runaway worker fails loudly instead of bloating every card.
+export const MAX_RULE_CHARS = 2000;
+export const MAX_RULES_PER_CALL = 20;
+export const MAX_TOTAL_RULE_CHARS = 60_000;
+
+export interface AddRulesResult {
+  added: string[];
+  skipped_duplicates: string[];
+  total: number;
+  brief: Brief;
+}
+
+/// Append `rules` to the brief's style rules, keeping every existing rule
+/// untouched. A rule already present (or repeated in this call) after
+/// trimming and ignoring case is skipped. Each added rule gets a
+/// `rule_sources` entry. All-or-nothing: a limit error writes nothing.
+export function addStyleRules(
+  projectId: string,
+  rules: string[],
+  provenance: Omit<RuleSource, "rule" | "added_at">,
+): AddRulesResult {
+  const brief = getBrief(projectId);
+  if (!brief) throw new Error("no brief yet — the owner hasn't run the setup wizard, so there are no style rules to add to");
+  if (rules.length > MAX_RULES_PER_CALL) throw new Error(`too many rules in one call (${rules.length}; max ${MAX_RULES_PER_CALL})`);
+  const existing = brief.elements?.style_rules ?? [];
+  const seen = new Set(existing.map(ruleKey));
+  const added: string[] = [];
+  const skipped: string[] = [];
+  rules.forEach((raw, i) => {
+    const rule = raw.trim();
+    if (!rule) throw new Error(`rules[${i}]: empty rule`);
+    if (rule.length > MAX_RULE_CHARS) throw new Error(`rules[${i}]: too long (${rule.length} characters; max ${MAX_RULE_CHARS}) — state the rule, not the reasoning`);
+    const key = ruleKey(rule);
+    if (seen.has(key)) {
+      skipped.push(rule);
+      return;
+    }
+    seen.add(key);
+    added.push(rule);
+  });
+  const style_rules = [...existing, ...added];
+  const totalChars = style_rules.reduce((n, r) => n + r.length, 0);
+  if (added.length > 0 && totalChars > MAX_TOTAL_RULE_CHARS) {
+    throw new Error(
+      `the story's style rules would total ${totalChars} characters (max ${MAX_TOTAL_RULE_CHARS}) — nothing added. ` +
+        "Ask the owner to merge or trim rules in the wizard first.",
+    );
+  }
+  if (added.length === 0) return { added, skipped_duplicates: skipped, total: existing.length, brief };
+  const at = nowIso();
+  const sources: RuleSource[] = added.map((rule) => ({ rule, ...provenance, added_at: at }));
+  const next: Brief = {
+    ...brief,
+    elements: { ...brief.elements, style_rules },
+    rule_sources: [...(brief.rule_sources ?? []), ...sources],
+    updated_at: at,
+  };
+  putBrief(projectId, next);
+  return { added, skipped_duplicates: skipped, total: style_rules.length, brief: next };
 }
 
 // ── Records (one doc per section) ───────────────────────────────────────

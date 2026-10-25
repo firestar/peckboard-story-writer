@@ -22,6 +22,7 @@ import {
   StoryBasics,
   defaultBrief,
   nowIso,
+  ruleKey,
 } from "./types";
 
 const TOP_LEVEL = new Set(["about", "basics", "modes", "status", "elements", "lesson_overrides", "updated_at"]);
@@ -183,6 +184,13 @@ export function mergeWizardUpdate(
       overrides[id] = text;
     }
     next.lesson_overrides = overrides;
+  }
+
+  // Agent-added rules (SW-16) the owner deleted or rewrote lose their
+  // "added from" tag: a rewritten rule is the owner's own.
+  if (next.elements.style_rules !== base.elements.style_rules && next.rule_sources?.length) {
+    const kept = new Set(next.elements.style_rules.map(ruleKey));
+    next.rule_sources = next.rule_sources.filter((s) => kept.has(ruleKey(s.rule)));
   }
 
   next.updated_at = nowIso();

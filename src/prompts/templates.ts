@@ -5,7 +5,7 @@
 // relevant to that stage — never the whole 450-line lessons doc.
 
 import { packLessons, renderLessons } from "./lessons";
-import { contract, chapterPath, draftKey, StageKind } from "./contract";
+import { briefCall, contract, chapterPath, draftKey, StageKind } from "./contract";
 
 export type Format = "prose" | "vn";
 
@@ -144,7 +144,7 @@ export function briefSection(brief: PromptBrief | null): string {
   ];
   const premise = brief.elements?.premise;
   if (premise) lines.push("", `Premise: ${clip(premise, 800)}`);
-  lines.push("", "Full brief: story_get_brief.");
+  lines.push("", `Full brief: story_get_brief returns a summary; fetch any part in full with ${briefCall("elements.plot_outline")} (sections: basics, rules, banned_words, feedback, owner_reviews, state, elements, elements.<element>).`);
   return lines.join("\n");
 }
 
@@ -168,7 +168,7 @@ export function rulesSection(brief: PromptBrief | null, keep = Infinity): string
   }
   const shown = rules.slice(0, keep);
   let ruleLines = shown.length > 0 ? shown.map((r) => `- ${r}`).join("\n") : "(none yet)";
-  if (shown.length < rules.length) ruleLines += `\n\n(${rules.length - shown.length} more story rules omitted — full list via story_get_brief)`;
+  if (shown.length < rules.length) ruleLines += `\n\n(${rules.length - shown.length} more story rules omitted — full list via ${briefCall("rules")})`;
   return `## Story rules (override the defaults)\n\n${ruleLines}\n\nBanned words (never use): ${bannedDisplay.join(", ")}.`;
 }
 
@@ -188,7 +188,7 @@ function feedbackSection(feedback: PromptFeedback[], budget: number): string {
 
   const renderWith = (n: number) => {
     const omitted = reversed.length - n;
-    const note = omitted > 0 ? `\n\n(${omitted} older feedback item${omitted === 1 ? "" : "s"} omitted — full list via story_get_brief)` : "";
+    const note = omitted > 0 ? `\n\n(${omitted} older feedback item${omitted === 1 ? "" : "s"} omitted — full list via ${briefCall("feedback")})` : "";
     return header + rendered.slice(0, n).join("\n\n") + note;
   };
 
@@ -415,7 +415,7 @@ function taskFor(kind: StageKind, input: RenderInput & { chapter?: number; forma
   switch (kind) {
     case "records":
       return [
-        "Read the brief (story_get_brief) and the setup-wizard answers.",
+        `Read the setup-wizard answers in full: ${briefCall("elements")} (story_get_brief with no arguments is a summary).`,
         "Build a character sheet for every character: role, personality, values/fears/flaws, want vs need, lie/wound/ghost, one speech habit, starting emotion, starting attitude to every other character with a reason, and what they know. Leave first_intro blank — the chapter that actually introduces each character records it.",
         "Build the relationships, the glossary, the setup/payoff list (promise → progress → payoff), and chapter 1's scene-fact sheet (with its unexplained names/terms/rules — up to 3, each with an answered_in reference) and chapter-state sheet.",
         "Submit everything with story_submit_records.",
@@ -423,7 +423,7 @@ function taskFor(kind: StageKind, input: RenderInput & { chapter?: number; forma
     case "pilot":
     case "chapter":
       return [
-        "Read the brief, the records (story_get_records), and the recap of every earlier chapter.",
+        `Read the brief (story_get_brief, then ${briefCall("elements.plot_outline", "elements.setting")} for the outline and world), the records (story_get_records), and the recap of every earlier chapter.`,
         "Build a scene-fact sheet per scene: time, place, light, who's present and where, what each person wants, what the lead carries/wears/is injured by, and up to 3 unexplained names/terms/rules with an answered_in reference.",
         input.format === "vn"
           ? "Look at this chapter's background art and sprites before writing each scene; let the setting drive what happens."
@@ -453,7 +453,7 @@ function taskFor(kind: StageKind, input: RenderInput & { chapter?: number; forma
     case "generate": {
       const key = input.element as ElementKey;
       const label = ELEMENT_LABELS[key];
-      const lines = ["Read the brief and the records.", `Draft the ${label.toLowerCase()}. Value shape: ${ELEMENT_HINTS[key]}`];
+      const lines = [`Read the brief (${briefCall("elements")}) and the records.`, `Draft the ${label.toLowerCase()}. Value shape: ${ELEMENT_HINTS[key]}`];
       const existing = input.brief?.elements?.[key];
       const mode = input.brief?.modes?.[key];
       if (mode === "draft" && existing) {
