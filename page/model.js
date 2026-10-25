@@ -561,6 +561,11 @@ export function startWarnings(brief) {
 // merged in: the server's copy wins everywhere EXCEPT paths the owner has
 // unsaved or in-flight edits on, so AI drafts and statuses land live without
 // clobbering what's being typed.
+//
+// The style-rule list is the exception a worker also writes to
+// (story_add_style_rules): a save of it carries `style_rules_base`, the
+// server list the owner's edit started from, and the server keeps rules that
+// arrived since (src/wizard.ts).
 
 /// Every path the wizard writes — used for the first save, which creates
 /// the brief.
@@ -574,11 +579,16 @@ export function allPaths(brief) {
   ];
 }
 
-export function buildPatch(brief, paths) {
+/// `rulesBase`: the server rule list the owner's unsaved rule edit started
+/// from (null = none known), sent along with an `elements.style_rules` save.
+export function buildPatch(brief, paths, rulesBase = null) {
   const patch = {};
   for (const p of paths) {
     const v = getPath(brief, p);
     if (v !== undefined) setPath(patch, p, clone(v));
+  }
+  if (Array.isArray(rulesBase) && patch.elements && patch.elements.style_rules !== undefined) {
+    patch.style_rules_base = clone(rulesBase);
   }
   return patch;
 }

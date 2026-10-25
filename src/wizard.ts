@@ -10,6 +10,13 @@
 // itself (only /pipeline/generate does). An `awaiting_ai` element whose card
 // is NOT running any more (closed as won't-do) is stale: the owner's next
 // edit to it resets it to `empty`.
+//
+// The style-rule list is the one element a worker writes mid-story
+// (story_add_style_rules), so a page save of it is a 3-way merge: the page
+// sends `style_rules_base`, the server list its edit started from. Stored
+// rules in neither the base nor the page's list arrived after the owner
+// last saw the list — they're kept (with their provenance). Rules in the
+// base the page dropped are owner deletions. No base: the page's list wins.
 
 import { lessons } from "./prompts";
 import {
@@ -25,7 +32,7 @@ import {
   ruleKey,
 } from "./types";
 
-const TOP_LEVEL = new Set(["about", "basics", "modes", "status", "elements", "lesson_overrides", "updated_at"]);
+const TOP_LEVEL = new Set(["about", "basics", "modes", "status", "elements", "lesson_overrides", "style_rules_base", "updated_at"]);
 const BASICS_TEXT = ["title", "genre", "pov", "tense", "tone", "audience", "rating"] as const;
 const TEXT_ELEMENTS: ElementKey[] = ["premise", "plot_outline", "setting"];
 const LIST_ELEMENTS: ElementKey[] = ["themes", "style_rules", "banned_words"];
@@ -73,6 +80,21 @@ function checkElement(key: ElementKey, value: unknown): void {
   }
 }
 
+/// The page's rule list plus every stored rule that arrived after the
+/// owner's edit started: in neither `seen` (the list it started from) nor
+/// the page's list. Without `seen`, the page's list as sent.
+function withLaterRules(client: string[], stored: string[], seen: string[] | undefined): string[] {
+  if (!seen) return client;
+  const known = new Set([...seen, ...client].map(ruleKey));
+  const later = stored.filter((r) => {
+    const key = ruleKey(r);
+    if (known.has(key)) return false;
+    known.add(key);
+    return true;
+  });
+  return later.length ? [...client, ...later] : client;
+}
+
 /// Validate `update` and merge it over `existing`. `generating(k)` says
 /// whether element k's AI-generate card is still open. Returns the merged
 /// brief plus the element keys whose edits were dropped because an
@@ -86,6 +108,11 @@ export function mergeWizardUpdate(
   if (!isObj(update)) throw new Error("brief (object) is required");
   for (const key of Object.keys(update)) {
     if (!TOP_LEVEL.has(key)) throw new Error(`unknown brief field: ${key}`);
+  }
+
+  const rulesBase = update.style_rules_base;
+  if (rulesBase !== undefined && (!Array.isArray(rulesBase) || rulesBase.some((r) => typeof r !== "string"))) {
+    throw new Error("style_rules_base: expected an array of strings");
   }
 
   const base = normalizeBrief(existing);
@@ -149,7 +176,8 @@ export function mergeWizardUpdate(
         continue;
       }
       if (JSON.stringify(v) === JSON.stringify(base.elements[k])) continue;
-      (next.elements as unknown as Record<string, unknown>)[k] = v;
+      (next.elements as unknown as Record<string, unknown>)[k] =
+        k === "style_rules" ? withLaterRules(v as string[], base.elements.style_rules ?? [], rulesBase as string[] | undefined) : v;
       if (base.status[k] === "awaiting_ai") next.status[k] = "empty"; // stale: its card closed without a draft
     }
   }

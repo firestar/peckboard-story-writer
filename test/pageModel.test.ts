@@ -36,6 +36,16 @@ describe("page model: save/merge bookkeeping", () => {
       modes: { premise: "draft" },
     });
   });
+  it("sends the rules' base only with a style_rules save", () => {
+    const b = brief({ about: "x", elements: { style_rules: ["Mine.", "Base."] } });
+    const base = ["Base."];
+    const patch = M.buildPatch(b, ["elements.style_rules"], base);
+    expect(patch).toEqual({ elements: { style_rules: ["Mine.", "Base."] }, style_rules_base: ["Base."] });
+    expect(patch.style_rules_base).not.toBe(base);
+    expect(M.buildPatch(b, ["about"], base)).toEqual({ about: "x" });
+    expect(M.buildPatch(b, ["elements.style_rules"])).toEqual({ elements: { style_rules: ["Mine.", "Base."] } });
+  });
+
 
   it("merges the server copy but keeps paths the owner is still editing", () => {
     const local = brief({ about: "typing…", basics: { title: "Mine" } });

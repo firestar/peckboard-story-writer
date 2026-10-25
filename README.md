@@ -114,7 +114,10 @@ session id, the optional `card_id`, and a timestamp) is kept in
 dashboard's rules panel tag each such rule **Added from <source>**, and the
 owner edits or deletes it like their own — the story's rule list stays
 editable in the setup view even after the pipeline has started. A rule the
-owner rewrites or deletes loses its tag. New rules reach every card
+owner rewrites or deletes loses its tag. A wizard save of the rule list is
+a 3-way merge (`style_rules_base` = the server list the owner's edit
+started from): a rule a worker added while the owner's edit was unsaved,
+in flight or waiting for Retry is kept, with its tag. New rules reach every card
 rendered after the call (writing, revision, cold-read fix, owner-review
 revision, review), the same way owner rules do. Size guard: the store
 chunks any doc past 240 KiB, so the brief can't hit the host's 256 KiB

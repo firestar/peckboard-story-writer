@@ -14,6 +14,7 @@ import { postJSON } from "./bridge.js";
 import * as M from "./model.js";
 
 const SAVE_DELAY_MS = 700;
+const RULES = "elements.style_rules";
 
 const svg = (body, sw = 2) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
@@ -98,7 +99,7 @@ export function mountWizard(container, opts) {
   // Once the pipeline has started the setup is read-only, except the story's
   // own rule list: workers add rules mid-pipeline (story_add_style_rules) and
   // the owner must still be able to edit or remove them (SW-16).
-  const canSave = (path) => !readOnly || path === "elements.style_rules";
+  const canSave = (path) => !readOnly || path === RULES;
   let touchedAfterStart = false;
   const maxChapters = defaults.max_chapters;
 
@@ -111,6 +112,10 @@ export function mountWizard(container, opts) {
   let saveTimer = null;
   let saveError = null;
   let destroyed = false;
+  // The server's rule list the owner's unsaved rule edit started from, sent
+  // with the save as style_rules_base so rules a worker added meanwhile
+  // (story_add_style_rules) survive it. null = no rule edit pending.
+  let rulesBase = null;
 
   let step = server.brief ? "review" : "about";
   let notice = null; // {tone, text, action?: {label, step}}
@@ -132,6 +137,9 @@ export function mountWizard(container, opts) {
   function markDirty(path) {
     if (destroyed || !canSave(path)) return;
     if (readOnly) touchedAfterStart = true;
+    if (path === RULES && rulesBase === null && server.brief) {
+      rulesBase = M.clone(M.getPath(server.brief, RULES) || []);
+    }
     dirty.add(path);
     saveError = null;
     paintSave();
@@ -148,14 +156,18 @@ export function mountWizard(container, opts) {
     const paths = hasServerBrief ? Array.from(dirty) : M.allPaths(draft).concat(Array.from(dirty));
     dirty.clear();
     inflight = new Set(paths);
+    const patch = M.buildPatch(draft, paths, rulesBase);
+    const sentRules = paths.includes(RULES) ? M.getPath(patch, RULES) : undefined;
     paintSave();
     const run = (async () => {
       try {
-        const res = await postJSON(`${P}/wizard`, { brief: M.buildPatch(draft, paths) });
+        const res = await postJSON(`${P}/wizard`, { brief: patch });
         inflight = new Set();
         hasServerBrief = true;
         saveError = null;
         server = { ...server, brief: res.brief };
+        // Rule edits made since start from the list just saved.
+        if (sentRules) rulesBase = dirty.has(RULES) ? M.clone(sentRules) : null;
         const merged = M.mergeServer(draft, res.brief, dirty);
         const changed = !M.sameBrief(merged, draft);
         draft = merged;
@@ -176,6 +188,8 @@ export function mountWizard(container, opts) {
           throw e;
         }
         for (const p of paths) dirty.add(p);
+        // The save may have landed anyway: the rules it sent count as seen.
+        if (sentRules && rulesBase) rulesBase = rulesBase.concat(sentRules.filter((r) => !rulesBase.includes(r)));
         saveError = msg(e);
         paintSave();
         throw e;
@@ -2165,7 +2179,7 @@ export function mountWizard(container, opts) {
       // Leaving the read-only setup right after editing a rule: send it now
       // rather than drop it with the debounce timer.
       if (readOnly && dirty.size && !saving) {
-        postJSON(`${P}/wizard`, { brief: M.buildPatch(draft, Array.from(dirty)) }).catch(() => {});
+        postJSON(`${P}/wizard`, { brief: M.buildPatch(draft, Array.from(dirty), rulesBase) }).catch(() => {});
       }
       destroyed = true;
       clearTimeout(saveTimer);

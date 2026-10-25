@@ -198,6 +198,62 @@ describe("POST /wizard (partial merge)", () => {
   });
 });
 
+describe("POST /wizard style rules: 3-way merge with style_rules_base", () => {
+  const OWNER = "Owner rule: keep sentences short.";
+  const AGENT = "No writerly invented-precision lines. Say the plain thing.";
+  const JARGON = "Define a term in plain words on first use.";
+  const SOURCE = "story/reviews/chapter-01-owner.md:41";
+
+  const stored = () => invoke("story_get_brief", { full: true }).brief;
+
+  beforeEach(() => {
+    save({ about: "x", elements: { style_rules: [OWNER] } });
+  });
+
+  it("keeps a rule a worker added after the owner's edit started, with its provenance", () => {
+    // The owner's edit starts from [OWNER]; a worker adds a rule before the
+    // page's debounced save lands.
+    expect(invoke("story_add_style_rules", { rules: [AGENT], source: SOURCE }).added).toEqual([AGENT]);
+    const res = save({ elements: { style_rules: [OWNER, "Cut filler."] }, style_rules_base: [OWNER] });
+    expect(res.status).toBe(200);
+    expect(res.body.brief.elements.style_rules).toEqual([OWNER, "Cut filler.", AGENT]);
+    expect(res.body.brief).not.toHaveProperty("style_rules_base");
+    const brief = stored();
+    expect(brief.elements.style_rules).toEqual([OWNER, "Cut filler.", AGENT]);
+    expect(brief.rule_sources.map((s: any) => [s.rule, s.source])).toEqual([[AGENT, SOURCE]]);
+    expect(brief).not.toHaveProperty("style_rules_base");
+  });
+
+  it("still drops an agent rule the owner saw and deleted, with its tag", () => {
+    invoke("story_add_style_rules", { rules: [AGENT, JARGON], source: SOURCE });
+    const res = save({ elements: { style_rules: [OWNER, JARGON] }, style_rules_base: [OWNER, AGENT, JARGON] });
+    expect(res.body.brief.elements.style_rules).toEqual([OWNER, JARGON]);
+    expect(res.body.brief.rule_sources.map((s: any) => s.rule)).toEqual([JARGON]);
+  });
+
+  it("doesn't duplicate a later rule the owner also typed (trimmed, case-folded match)", () => {
+    invoke("story_add_style_rules", { rules: [AGENT], source: SOURCE });
+    const res = save({ elements: { style_rules: [OWNER, `  ${AGENT.toUpperCase()} `] }, style_rules_base: [OWNER] });
+    expect(res.body.brief.elements.style_rules).toEqual([OWNER, `  ${AGENT.toUpperCase()} `]);
+  });
+
+  it("without a base the page's list replaces the stored one; a base without a rule edit changes nothing", () => {
+    invoke("story_add_style_rules", { rules: [AGENT], source: SOURCE });
+    expect(save({ about: "y", style_rules_base: [] }).body.brief.elements.style_rules).toEqual([OWNER, AGENT]);
+
+    const res = save({ elements: { style_rules: [OWNER, "Cut filler."] } });
+    expect(res.body.brief.elements.style_rules).toEqual([OWNER, "Cut filler."]);
+    expect(res.body.brief.rule_sources).toEqual([]);
+  });
+
+  it("validates the base", () => {
+    for (const style_rules_base of ["x", [1], { a: "b" }]) {
+      const res = save({ elements: { style_rules: [OWNER] }, style_rules_base });
+      expect(res.status, JSON.stringify(style_rules_base)).toBe(400);
+      expect(res.body.error).toMatch(/style_rules_base: expected an array of strings/);
+    }
+  });
+});
 describe("lesson overrides", () => {
   const all = lessons();
 
