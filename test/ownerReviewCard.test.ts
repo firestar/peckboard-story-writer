@@ -32,7 +32,17 @@ describe("owner review revision card", () => {
     expect(card.description).toContain("No weather openers."); // story rules
     expect(card.description).toContain("## Lessons");
   });
-
+  it("task list: each step once, per-kind verbs and the story-wide rule tool under step 3", () => {
+    const card = renderOwnerReviewCard({ chapter: 1, round: 1, revision: 1, brief: BRIEF, notes: [n("n1")] });
+    const task = card.description.split("## Task")[1].split("## Done when")[0];
+    for (const step of ["1.", "2.", "3.", "4.", "5.", "6.", "7."]) {
+      expect(task.split("\n").filter((l) => l.startsWith(`${step} `))).toHaveLength(1);
+    }
+    expect(task).toContain("   - Mark wrong: fix exactly what the note says is wrong.");
+    expect(task.indexOf("story_add_style_rules")).toBeGreaterThan(task.indexOf("3. "));
+    expect(task.indexOf("story_add_style_rules")).toBeLessThan(task.indexOf("4. "));
+    expect(task).toContain('source: "story/reviews/chapter-01-owner.md:<line>"');
+  });
   it("names the pilot and stays under the description cap with a full round of long notes", () => {
     const notes = Array.from({ length: 100 }, (_, i) => n(`n${i + 1}`, { body: "x".repeat(4000), quote: "q".repeat(1000) }));
     const card = renderOwnerReviewCard({ chapter: 1, round: 1, revision: 1, brief: BRIEF, notes });

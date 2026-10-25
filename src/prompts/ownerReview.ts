@@ -120,11 +120,11 @@ export function renderOwnerReviewCard(input: OwnerReviewCardInput): OwnerReviewC
 
   const taskMd = [
     "## Task",
+    "",
     "1. Read the brief and the records (story_get_brief, story_get_records). The brief's default output is a summary — ask for any part in full with story_get_brief {sections:[...]}, e.g. [\"elements.plot_outline\"].",
-    "1. Read the brief and the records (story_get_brief, story_get_records).",
     `2. Read the current text of chapter ${chapter} (${chapterPath(chapter)}).`,
     "3. Go through the notes in order. For each one, find the quoted passage and act on it by its kind:",
-    "4. Address every note — none may be skipped. Change nothing the notes don't cover, except where a fix forces a continuity change elsewhere in the chapter (then say so in that note's resolution).",
+    ...KIND_TASKS.map((t) => `   - ${t}`),
     `   - A note that asks for a rule for the whole story (not just this passage): fix this chapter for it, and also add the rule with ${ADD_RULES_TOOL} {rules: ["..."], source: "${ownerReviewPath(chapter)}:<line>"} so every later card follows it. Don't wait for approval — the owner sees it tagged in the wizard.`,
     "4. Address every note — none may be skipped. Change nothing the notes don't cover, except where a fix forces a continuity change elsewhere in the chapter (then say so in that note's resolution).",
     "5. Read the whole chapter once as a reader; fix anything that no longer connects to the lines around it.",
