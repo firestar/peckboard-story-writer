@@ -41,6 +41,7 @@ import {
   getPipelineState,
   getOwnerReview,
   putOwnerReview,
+  getRecordSection,
   listChapters,
   getEngineIndex,
   putEngineIndex,
@@ -153,6 +154,13 @@ function chapterCountOf(ctx: Ctx): number {
   return ctx.brief?.basics?.chapter_count ?? 1;
 }
 
+/// A chapter's cumulative continuity handoff (records.handoffs), if its
+/// writer submitted one.
+function handoffOf(projectId: string, chapter: number): string | undefined {
+  const entry = getRecordSection<{ chapter: number; notes?: string }>(projectId, "handoffs").find((h) => h.chapter === chapter);
+  return typeof entry?.notes === "string" && entry.notes.trim() !== "" ? entry.notes : undefined;
+}
+
 // ── Unit lifecycle ───────────────────────────────────────────────────────
 
 interface UnitSpec {
@@ -167,6 +175,8 @@ interface UnitSpec {
   feedbackText?: string;
   /// Owner-review revision: the round whose notes the card addresses.
   ownerRound?: number;
+  /// Chapter cards: the previous chapter's handoff to embed.
+  handoff?: string;
 }
 
 function unitMarker(id: string, attempt: number): string {
@@ -246,6 +256,7 @@ function materialize(ctx: Ctx, unit: Unit, spec: UnitSpec): void {
               pass: spec.pass,
               element: spec.element,
               feedbackText: spec.feedbackText,
+              handoff: spec.handoff,
             });
   const description = `${rendered.description}\n\n${marker}`;
   const model = modelFor(rendered.role);
@@ -267,6 +278,7 @@ function materialize(ctx: Ctx, unit: Unit, spec: UnitSpec): void {
   const created = createCardSafe(ctx, input);
   unit.card_id = created.id;
   unit.updated_at = nowIso();
+  if (spec.kind === "chapter" && !spec.blocked) unit.unblocked = true;
   ctx.budget.createsLeft -= 1;
   ctx.dirty = true;
 }
@@ -311,6 +323,7 @@ function resetUnit(ctx: Ctx, id: string): void {
   unit.card_id = null;
   unit.attempt += 1;
   unit.note = undefined;
+  unit.unblocked = undefined;
   unit.updated_at = nowIso();
   ctx.dirty = true;
 }
@@ -401,6 +414,10 @@ function completeUnit(ctx: Ctx, unit: Unit): void {
       );
       return;
     }
+  }
+  if ((unit.kind === "pilot" || unit.kind === "chapter") && !handoffOf(ctx.projectId, unit.chapter as number)) {
+    failUnit(unit, `card finished without a handoff for chapter ${unit.chapter} (story_submit_chapter {handoff}) — the next chapter is written from it`);
+    return;
   }
   unit.status = "done";
   unit.updated_at = nowIso();
@@ -587,9 +604,9 @@ function advanceRecords(ctx: Ctx): boolean {
   return true;
 }
 
-/// Queues the pilot card and the (blocked) parallel chapter cards 2..N up
-/// front, so the blocked cards are visible on the board before the owner
-/// approves — not created only at approval time.
+/// Queues the pilot card and the (blocked) chapter cards 2..N up front, so
+/// they are visible on the board before the owner approves — not created
+/// only at approval time. advanceChapters unblocks them one at a time.
 function advancePilot(ctx: Ctx): boolean {
   const n = chapterCountOf(ctx);
   const pilot = ensureUnit(ctx, { id: "pilot", kind: "pilot", chapter: 1, priority: 1 });
@@ -601,7 +618,10 @@ function advancePilot(ctx: Ctx): boolean {
       chapter: i,
       priority: 2,
       blocked: true,
-      blockReason: "Waiting for the owner to approve the pilot chapter",
+      blockReason:
+        i === 2
+          ? "Waiting for the owner to approve the pilot chapter"
+          : `Waiting for chapter ${i - 1} to be written and clear its cold read — chapters are written in order`,
     });
   }
   if (pilot.status !== "done") return false;
@@ -611,20 +631,33 @@ function advancePilot(ctx: Ctx): boolean {
   return true;
 }
 
-/// Chapters 2..N are written in parallel, but their cold reads run in
-/// order (C1): `cold_read:i` is created only once chapters 1..i−1 have
-/// cleared their cold-read chain, so the fresh reader gets every earlier
-/// chapter as the player will finally see it — never missing, never
-/// mid-fix. Chapter 1 (the pilot) cleared its chain before this stage.
+/// Chapters 2..N are written strictly in order: chapter i's card is
+/// unblocked only once chapter i−1 has cleared (its card done, its cold
+/// read and fixes done, no owner redraft in flight), with chapter i−1's
+/// cumulative handoff embedded, so every chapter follows from what the
+/// previous one actually ended on. Cold reads run in the same order (C1):
+/// the fresh reader gets every earlier chapter as the player will finally
+/// see it — never missing, never mid-fix.
 function advanceChapters(ctx: Ctx): boolean {
   const n = chapterCountOf(ctx);
   let allDone = true;
-  let priorCleared = true;
+  let priorCleared = !unsettledOwnerRevision(ctx, 1);
   for (let i = 2; i <= n; i++) {
-    const unit = ensureUnit(ctx, { id: `chapter:${i}`, kind: "chapter", chapter: i, priority: 2, blocked: false });
+    const handoff = priorCleared ? (handoffOf(ctx.projectId, i - 1) ?? legacyHandoff(i - 1)) : undefined;
+    const unit = ensureUnit(ctx, {
+      id: `chapter:${i}`,
+      kind: "chapter",
+      chapter: i,
+      priority: 2,
+      blocked: !priorCleared,
+      blockReason: `Waiting for chapter ${i - 1} to be written and clear its cold read — chapters are written in order`,
+      handoff,
+    });
+    if (priorCleared) unblockChapter(ctx, unit, handoff as string);
     // A chapter the owner sent back (SW-15): its redraft's cold read runs
     // only once the writer's card is done, and until the round settles it
-    // isn't cleared, so no later chapter's cold read reads it mid-redraft.
+    // isn't cleared, so no later chapter is started or cold-read on it
+    // mid-redraft.
     const redraft = unsettledOwnerRevision(ctx, i);
     const chained: boolean = priorCleared && unit.status === "done" && (!redraft || redraft.status === "done") && advanceColdReadChain(ctx, i);
     const cleared: boolean = chained && !redraft;
@@ -640,6 +673,37 @@ function advanceChapters(ctx: Ctx): boolean {
   }
   ctx.dirty = true;
   return true;
+}
+
+/// Stand-in for a chapter finished before handoffs existed.
+function legacyHandoff(chapter: number): string {
+  return (
+    `(Chapter ${chapter} was written before chapter handoffs existed. Before writing, build the handoff yourself from ` +
+    `the recaps, chapter_state, knowledge, relationships and setups of chapters 1..${chapter} (story_get_records {chapter:${chapter}}), ` +
+    `and submit the cumulative result as this chapter's handoff.)`
+  );
+}
+
+/// Unblock a chapter card created blocked, re-rendering its description
+/// with the previous chapter's handoff. Once per card (`unit.unblocked`);
+/// a card created after its turn came was created unblocked (materialize).
+function unblockChapter(ctx: Ctx, unit: Unit, handoff: string): void {
+  if (unit.unblocked || unit.status !== "open" || unit.card_id === null) return;
+  try {
+    const rendered = renderCard("chapter", {
+      brief: toPromptBrief(ctx.brief),
+      feedback: toPromptFeedback(ctx.feedback),
+      overrides: overridesOf(ctx.brief),
+      chapter: unit.chapter,
+      handoff,
+    });
+    updateCard({ card_id: unit.card_id, description: `${rendered.description}\n\n${unitMarker(unit.id, unit.attempt)}`, blocked: false });
+    unit.unblocked = true;
+    unit.updated_at = nowIso();
+  } catch (e) {
+    ctx.engine.note = `failed to unblock chapter ${unit.chapter}: ${errMsg(e)}`;
+  }
+  ctx.dirty = true;
 }
 
 /// Advance one chapter's cold-read (C1) -> cold-read-fix (C2) chain
@@ -1048,23 +1112,10 @@ export function requestApprove(projectId: string): { ok: true; round: number } {
   engine.stage = "chapters";
   engine.updated_at = nowIso();
 
-  const brief = getBrief(projectId);
-  const feedback = getFeedback(projectId);
-  for (const unit of Object.values(engine.units)) {
-    if (unit.kind !== "chapter" || !unit.card_id) continue;
-    try {
-      const rendered = renderCard("chapter", {
-        brief: toPromptBrief(brief),
-        feedback: toPromptFeedback(feedback),
-        overrides: overridesOf(brief),
-        chapter: unit.chapter,
-      });
-      updateCard({ card_id: unit.card_id, description: `${rendered.description}\n\n${unitMarker(unit.id, unit.attempt)}`, blocked: false });
-    } catch (e) {
-      engine.note = `failed to unblock chapter ${unit.chapter}: ${errMsg(e)}`;
-    }
-  }
-
+  // Chapter cards stay blocked: advanceChapters (via runEngine below)
+  // unblocks chapter 2 now with the pilot's handoff, and each later one
+  // only once the chapter before it has cleared.
+  putEngine(projectId, engine);
   putEngine(projectId, engine);
   const round = recordApproval(projectId, 1);
   runEngine(projectId);

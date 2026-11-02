@@ -65,7 +65,12 @@ function unitOf(card: FakeCard): string {
 /// card's unit, then finishes the card.
 function submitAndFinish(cards: ReturnType<typeof fakeCards>, cardId: string, chapter: number): void {
   const card = cards.cards.find((c) => c.id === cardId)!;
-  const res = invoke("story_submit_chapter", { chapter, markdown: `# Chapter ${chapter}\n\nDraft text.`, unit: unitOf(card) });
+  const res = invoke("story_submit_chapter", {
+    chapter,
+    markdown: `# Chapter ${chapter}\n\nDraft text.`,
+    handoff: `## Causal chain\n- Chapter ${chapter} happened.`,
+    unit: unitOf(card),
+  });
   expect(res.ok, res.error).toBe(true);
   finishCard(cards, cardId);
 }
@@ -162,7 +167,7 @@ describe("pipeline engine: happy path", () => {
 
     finishCard(cards, recordsCard.id);
 
-    // Pilot + two blocked parallel chapter cards (2, 3) now exist.
+    // Pilot + two blocked chapter cards (2, 3) now exist.
     expect(open(cards.cards)).toHaveLength(3);
     const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
     const ch2 = cards.cards.find((c) => c.title === "Chapter 2")!;
@@ -175,13 +180,26 @@ describe("pipeline engine: happy path", () => {
     finishColdRead(cards, 1); // C1/C2 for the pilot, no items -> clears straight through
     expect(authed("GET", "/state").body.engine.stage).toBe("pilot_review");
 
+    // Chapters are written in order: approval unblocks only chapter 2, with
+    // the pilot's handoff embedded on its card.
     const approve = authed("POST", "/pipeline/approve");
     expect(approve.body.ok).toBe(true);
-    expect(cards.cards.find((c) => c.id === ch2.id)!.blocked).toBe(false);
-    expect(cards.cards.find((c) => c.id === ch3.id)!.blocked).toBe(false);
+    const ch2Now = cards.cards.find((c) => c.id === ch2.id)!;
+    expect(ch2Now.blocked).toBe(false);
+    expect(ch2Now.description).toContain("## Handoff from chapter 1");
+    expect(ch2Now.description).toContain("- Chapter 1 happened.");
+    expect(cards.cards.find((c) => c.id === ch3.id)!.blocked).toBe(true);
 
+    // Chapter 3 waits until chapter 2 is written AND has cleared its cold read.
     submitAndFinish(cards, ch2.id, 2);
+    expect(cards.cards.find((c) => c.id === ch3.id)!.blocked).toBe(true);
     finishColdRead(cards, 2);
+    const ch3Now = cards.cards.find((c) => c.id === ch3.id)!;
+    expect(ch3Now.blocked).toBe(false);
+    expect(ch3Now.description).toContain("## Handoff from chapter 2");
+    expect(ch3Now.description).toContain("- Chapter 2 happened.");
+    expect(files["story/handoffs.md"]).toContain("## After chapter 2");
+
     submitAndFinish(cards, ch3.id, 3);
     finishColdRead(cards, 3);
     expect(authed("GET", "/state").body.engine.stage).toBe("review");
@@ -213,6 +231,31 @@ describe("pipeline engine: happy path", () => {
   });
 });
 
+describe("pipeline engine: chapter handoffs", () => {
+  it("fails a chapter card finished without a handoff, so the next chapter never starts without one", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
+    invoke("story_submit_chapter", { chapter: 1, markdown: "# Chapter 1\n\nNo handoff.", unit: unitOf(pilotCard) });
+    finishCard(cards, pilotCard.id);
+
+    const st = authed("GET", "/state").body;
+    expect(st.engine.units.pilot.status).toBe("failed");
+    expect(st.engine.units.pilot.note).toContain("without a handoff");
+    expect(st.engine.stage).toBe("pilot");
+  });
+
+  it("stores the handoff in records.handoffs, capped by chapter on story_get_records", () => {
+    invoke("story_submit_chapter", { chapter: 1, markdown: "x", handoff: "after one" });
+    invoke("story_submit_chapter", { chapter: 2, markdown: "y", handoff: "after two" });
+    expect(invoke("story_get_records", { sections: ["handoffs"], chapter: 1 }).records.handoffs).toEqual([{ chapter: 1, notes: "after one" }]);
+    // A resubmit without a handoff keeps the stored one.
+    invoke("story_submit_chapter", { chapter: 2, markdown: "y2" });
+    expect(invoke("story_get_records", { sections: ["handoffs"] }).records.handoffs).toHaveLength(2);
+    expect(files["story/handoffs.md"]).toContain("after two");
+  });
+});
 describe("pipeline engine: owner review gate", () => {
   it("rejects approve before the pilot is reviewable, and while a pilot revision is open", () => {
     setupBrief();
@@ -300,7 +343,7 @@ function toPilotReview(coldItems: string[] = []): void {
   authed("POST", "/pipeline/start");
   finishCard(cards, cards.cards[0].id);
   const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
-  invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT });
+  invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT, handoff: "## Causal chain\n- The pilot happened." });
   finishCard(cards, pilotCard.id);
   finishColdRead(cards, 1, coldItems);
   expect(authed("GET", "/state").body.engine.stage).toBe("pilot_review");
@@ -576,7 +619,7 @@ describe("SW-15: open notes on approve; no passes during a redraft", () => {
     setupBrief({ basics: { ...briefFixture().basics, chapter_count: 1 } });
     authed("POST", "/pipeline/start");
     finishCard(cards, cards.cards[0].id);
-    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT });
+    invoke("story_submit_chapter", { chapter: 1, markdown: PILOT_TEXT, handoff: "## Causal chain\n- The pilot happened." });
     finishCard(cards, cards.cards.find((c) => c.title.startsWith("Pilot"))!.id);
     finishColdRead(cards, 1);
     authed("POST", "/pipeline/approve");
@@ -1167,7 +1210,7 @@ describe("pipeline engine: host limits", () => {
     const challenged = new Set<string>();
     let coldSeq = 0;
     for (let guard = 0; guard < 6000; guard++) {
-      const next = open(cards.cards)[0];
+      const next = open(cards.cards).filter((c) => !c.blocked)[0];
       if (!next) {
         const stage = authed("GET", "/state").body.engine.stage;
         if (stage === "pilot_review") authed("POST", "/pipeline/approve");
@@ -1177,7 +1220,7 @@ describe("pipeline engine: host limits", () => {
       }
       if (next.title.startsWith("Pilot") || next.title.startsWith("Chapter ")) {
         const ch = Number(/(\d+)$/.exec(next.title)![1]);
-        invoke("story_submit_chapter", { chapter: ch, markdown: `# Chapter ${ch}\n\nDraft.` });
+        invoke("story_submit_chapter", { chapter: ch, markdown: `# Chapter ${ch}\n\nDraft.`, handoff: `After chapter ${ch}.` });
         finishCard(cards, next.id);
         continue;
       }

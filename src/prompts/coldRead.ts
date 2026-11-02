@@ -13,7 +13,7 @@
 // chapter (and advances the stage machine on completion) is SW-9's job.
 // This file only has to produce a correct card given a chapter number.
 
-import { UNIT_ARG_LINE } from "./contract";
+import { HANDOFF_UPDATE_LINE, UNIT_ARG_LINE } from "./contract";
 import { renderLessons } from "./lessons";
 import { briefSection, clip, DISCLAIMER, formatOf, rulesSection, type PromptBrief } from "./templates";
 
@@ -146,6 +146,7 @@ export function renderColdReadFixCard(input: ColdReadFixCardInput): ColdReadCard
     `6. Resubmit the fixed chapter with story_submit_chapter, then log the mapping with ${COLD_READ_TOOLS.submitFixes} ` +
       `{chapter: ${chapter}, fixes: [{item: "c1", fix: "..."}, ...]} — one entry per item id shown above.`,
     `7. ${UNIT_ARG_LINE}`,
+    `8. ${HANDOFF_UPDATE_LINE}`,
   ].join("\n");
 
   const doneMd = [

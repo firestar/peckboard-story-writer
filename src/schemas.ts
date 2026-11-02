@@ -80,6 +80,7 @@ export const RECORD_ITEM_SCHEMAS: Record<RecordSection, Schema> = {
     },
   }),
   recaps: item("recaps", { chapter: CHAPTER, recap: TEXT }),
+  handoffs: item("handoffs", { chapter: CHAPTER, notes: TEXT }),
 };
 
 const RECORDS_UPDATE_SCHEMA: Schema = {
@@ -90,12 +91,12 @@ const RECORDS_UPDATE_SCHEMA: Schema = {
   additionalProperties: false,
   description:
     "Partial records update, keyed by section (characters, relationships, knowledge, choices, " +
-    "setups, glossary, chapter_state, scene_sheets, recaps); each value is an array of items for " +
+    "setups, glossary, chapter_state, scene_sheets, recaps, handoffs); each value is an array of items for " +
     "that section. Items with a matching identity (id, or `term`/`chapter` for glossary/chapter_state/" +
-    "recaps) merge over the existing item (send only the changed fields); others are appended and " +
+    "recaps/handoffs) merge over the existing item (send only the changed fields); others are appended and " +
     "must carry the section's essential fields (characters: id+name, relationships: id+a+b, " +
     "knowledge: id+fact+known_by, choices: id+chapter+options, setups: id+promise+setup_chapter, " +
-    "glossary: term+definition, scene_sheets: id+chapter+scene, recaps: chapter+recap).",
+    "glossary: term+definition, scene_sheets: id+chapter+scene, recaps: chapter+recap, handoffs: chapter+notes).",
 };
 
 export const SCHEMAS = {
@@ -137,7 +138,7 @@ export const SCHEMAS = {
       chapter: {
         type: "integer",
         minimum: 0,
-        description: "Limit chapter-indexed sections (chapter_state, recaps) to this chapter and earlier.",
+        description: "Limit chapter-indexed sections (chapter_state, recaps, handoffs) to this chapter and earlier.",
       },
     },
     required: [],
@@ -157,6 +158,16 @@ export const SCHEMAS = {
       chapter: { type: "integer", minimum: 0, description: "Chapter number (0 = pilot)." },
       markdown: { type: "string", minLength: 1, description: "The complete chapter text." },
       recap: { type: "string", description: "Short recap of this chapter for later context." },
+      handoff: {
+        type: "string",
+        minLength: 1,
+        description:
+          "Cumulative continuity handoff for the next chapter (required for every chapter draft). Start from the " +
+          "previous chapter's handoff, carry every item forward (mark resolved ones resolved, don't drop them), and " +
+          "add this chapter's: causal chain (what happened because of what, with chapters), consequences still in " +
+          "play (injuries, debts, promises, grudges, who knows what), relationships now and why they changed, and " +
+          "open threads the next chapter must pick up.",
+      },
       records: {
         ...RECORDS_UPDATE_SCHEMA,
         description: "Optional partial records update this chapter causes (same shape as story_submit_records).",

@@ -5,7 +5,8 @@ A PeckBoard plugin: a per-project **Story** tab that runs a setup wizard
 setting/world, characters, relationships, themes, endings/routes/choices,
 style rules, banned words — a mode of *I write it* / *AI drafts, I edit* /
 *AI generates*), then drives the writing pipeline with cards: records ->
-pilot chapter -> owner review gate -> chapters in parallel -> review passes
+pilot chapter -> owner review gate -> chapters in order, each handing a
+cumulative continuity handoff to the next -> review passes
 (structure, character, pacing, line, copyedit, plus AI-tell / echo-word /
 sentence-shape) -> final export.
 
@@ -93,7 +94,7 @@ against `src/schemas.ts` (the same schemas the manifest declares).
 | `story_get_brief` | `sections?: string[]`, `max_chars?: integer` (5000–250000, default 20000), `full?: boolean` | No args: a summary under ~20k chars — basics, **all** style rules, banned words, the newest 8 feedback entries (clipped), owner review rounds without their notes, the state with `data` keys only, long elements clipped and characters/relationships/endings as id + name, plus a `hint`. `sections` returns those in full: `basics`, `rules` (+ `rule_sources`), `banned_words` (+ built-in list), `feedback`, `owner_reviews`, `state`, `elements`, `lesson_overrides`, `elements.<element>` (`premise`, `plot_outline`, `setting`, `characters`, `relationships`, `themes`, `endings`, `style_rules`, `banned_words`), or one item `elements.characters.<id>` / `elements.relationships.<id>` / `elements.endings.<id>`. Unknown names error with the valid list. Anything cut to fit `max_chars` is listed under `truncated: [{section, note, fetch}]` with the exact call that gets it. `full: true` is the old unsummarized dump (100k+ chars on a real story — the harness spills that to a file sandboxed workers can't read). |
 | `story_get_records` | `sections?: RecordSection[]`, `chapter?: integer` | Living records, optionally some sections / chapter-capped. |
 | `story_submit_records` | `records: {<section>: item[]}` | Upsert-merge by identity. |
-| `story_submit_chapter` | `chapter`, `markdown`, `recap?`, `records?`, `unit?` | Store a chapter (new revision); `unit` binds it to its card. |
+| `story_submit_chapter` | `chapter`, `markdown`, `recap?`, `handoff?`, `records?`, `unit?` | Store a chapter (new revision); `unit` binds it to its card. `handoff` (required for a pilot/chapter card to complete) is the cumulative continuity note for the next chapter — stored in `records.handoffs` and `story/handoffs.md`. |
 | `story_update_state` | `stage?`, `status?`, `note?`, `data?: object`, `replace?: boolean` | Per-stage status/note. `data` **shallow-merges** into `state.data`: keys you leave out are kept, a key set to `null` is deleted; `replace: true` swaps `state.data` wholesale. |
 | `story_add_style_rules` | `rules: string[]` (1–20, each ≤ 2000 chars), `source: string`, `card_id?: string` | Append story-wide style rules (see below). Returns `{added, skipped_duplicates, total}`. |
 | `story_report_review` | `chapter`, `pass`, `verdict`, `notes`, `rule?` | One review pass's verdict; `rule` is appended to the style rules. |
@@ -369,19 +370,27 @@ card's own description.
   `engine_index` doc) until a 1 s deadline and resuming after the last one
   on the next tick, and re-listing a project's cards at most every 10
   minutes (`list_cards` returns every card with its full description).
-- Parallel chapter cards (2..N) are created blocked as soon as the pilot
-  starts, so they're visible before the owner approves it. Stories are
-  capped at 40 chapters so each per-project doc stays under core's
-  256 KiB limit.
-- Chapters are written in parallel, but cold reads run in chapter order:
-  chapter N's cold-read card is created only once chapters 1..N−1 have
-  cleared their cold read (and fix), so the fresh reader gets every
-  earlier chapter in its final text (C1).
+- Chapter cards (2..N) are created blocked as soon as the pilot starts,
+  so they're visible before the owner approves it. Stories are capped at
+  40 chapters so each per-project doc stays under core's 256 KiB limit.
+- Chapters are written strictly in order: approving the pilot unblocks
+  chapter 2 only, and chapter N is unblocked only once chapter N−1's card
+  is done, its cold read (and fix) cleared, and no owner redraft of it is
+  in flight. At that moment the card is re-rendered with chapter N−1's
+  handoff embedded. Every pilot/chapter card must submit a cumulative
+  `handoff` (causal chain, consequences still in play, relationships now
+  and why, open threads — every earlier item carried forward, resolved ones
+  marked rather than dropped); a card finished without one fails. Review,
+  revision and cold-read-fix cards resubmit the handoff when their edits
+  change events. Cold reads run in the same order, so the fresh reader
+  gets every earlier chapter in its final text (C1).
+- Known gap: an owner redraft of chapter K after later chapters were
+  written doesn't re-write chapters K+1.. or their handoffs.
 - `POST .../pipeline/{generate,start,approve,feedback,retry}` and
   `GET .../export` (src/http.ts) are the owner/wizard actions: queue
   AI-generate-element cards, start the pipeline (gated on every
-  draft/generate element being owner-approved), approve the pilot (unblocks
-  the queued chapter cards), leave free-text feedback on the pilot or any
+  draft/generate element being owner-approved), approve the pilot (starts
+  chapter 2; the rest follow in order), leave free-text feedback on the pilot or any
   chapter (the fallback: an overall note with no line notes, appended to
   style_rules — same redraft loop as below), retry a failed unit, and
   assemble the final manuscript. A request the current stage doesn't allow

@@ -43,6 +43,12 @@ export const UNIT_ARG_LINE =
   `On every ${TOOLS.submitChapter} call pass \`unit\`: the value after "story-writer:unit=" in the comment at the very end of this card (e.g. "chapter:3#1"). ` +
   "If the call is refused because the card is no longer current, stop — don't resubmit; finish the card.";
 
+/// Review and revision resubmits keep the chapter's handoff true to its
+/// final text — the next chapter is written from it.
+export const HANDOFF_UPDATE_LINE =
+  `If your changes alter what happens, its consequences, who knows what, or where a relationship stands, also pass the chapter's updated cumulative \`handoff\` ` +
+  `(read the current one with ${TOOLS.records} {sections:["handoffs"]}; keep every item, change only what your edit changed).`;
+
 export type StageKind = "records" | "pilot" | "chapter" | "review" | "revision" | "generate";
 
 export interface ContractInput {
@@ -70,8 +76,10 @@ export function contract(kind: StageKind, x: ContractInput = {}): string {
     case "chapter": {
       const n = x.chapter ?? 1;
       lines.push(
-        `Read prior chapters' recaps and ${TOOLS.records} {chapter:${n}} before writing.`,
-        `Submit the finished chapter with ${TOOLS.submitChapter} {chapter:${n}, markdown, recap, records:{chapter_state, knowledge, setups, glossary, choices, scene_sheets}}.`,
+        n > 1
+          ? `Read prior chapters' recaps, chapter ${n - 1}'s handoff and ${TOOLS.records} {chapter:${n}} before writing.`
+          : `Read ${TOOLS.records} {chapter:${n}} before writing.`,
+        `Submit the finished chapter with ${TOOLS.submitChapter} {chapter:${n}, markdown, recap, handoff, records:{chapter_state, knowledge, setups, glossary, choices, scene_sheets}} — the card fails without a handoff.`,
         `Report progress with ${TOOLS.updateState} {stage:"${kind === "pilot" ? "pilot" : "chapters"}", note}.`,
       );
       break;
@@ -82,6 +90,7 @@ export function contract(kind: StageKind, x: ContractInput = {}): string {
       lines.push(
         `Read the current text of ${where} from the repo.`,
         `Fix problems in place, then resubmit the full fixed text with ${TOOLS.submitChapter} {chapter, markdown, recap, records}.`,
+        HANDOFF_UPDATE_LINE,
         `Report the verdict with ${TOOLS.report} ${reportOn}pass:"${x.pass}", verdict, notes, rule?}. "pass" once your fixes land cleanly; "changes_requested" only when the fix needs a rewrite beyond this pass. Put a reusable instruction in "rule" when it should apply to every later chapter.`,
       );
       break;
@@ -91,6 +100,7 @@ export function contract(kind: StageKind, x: ContractInput = {}): string {
       lines.push(
         `Read the current chapter ${n} text (${chapterPath(n)}) and the feedback above.`,
         `Resubmit the revised chapter with ${TOOLS.submitChapter} {chapter:${n}, markdown, recap, records}.`,
+        HANDOFF_UPDATE_LINE,
         `Report progress with ${TOOLS.updateState} {note:"chapter ${n} revised: <what changed>"}.`,
         `If the feedback asks for a rule for the whole story, also add it with ${TOOLS.addRules} {rules:["..."], source:"<where it was asked for>"} so every later card follows it.`,
       );

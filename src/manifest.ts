@@ -18,7 +18,8 @@ const DESCRIPTION =
   "relationships, themes, endings/routes/choices, style rules, banned words — a mode of " +
   "'I write it' / 'AI drafts, I edit' / 'AI generates') and then drives the writing " +
   "pipeline with cards: records -> pilot chapter -> cold read -> cold-read fixes -> owner " +
-  "review gate -> chapters in parallel (each: write -> cold read -> cold-read fixes) -> " +
+  "review gate -> chapters in order, each written from the previous chapter's handoff " +
+  "(each: write -> cold read -> cold-read fixes) -> " +
   "review passes (structure, character, pacing, line, copyedit, plus AI-tell / echo-word / " +
   "sentence-shape) -> final export. Every cold-read card runs in a FRESH session that sees " +
   "only the chapter text (plus earlier chapters as a player would see them) — never the " +
@@ -174,9 +175,9 @@ export function manifestJson(): string {
         name: "story_submit_chapter",
         description:
           "Submit a chapter's full text (pilot or any later chapter). Stored and mirrored to " +
-          "story/chapters/ in the project repo. Include a short recap for the next chapter's " +
-          "context and any records update (who-knows-what, setup/payoff, scene sheets) the " +
-          "chapter caused.",
+          "story/chapters/ in the project repo. Include a short recap, the cumulative continuity " +
+          "handoff the next chapter is written from (required on pilot/chapter cards), and any " +
+          "records update (who-knows-what, setup/payoff, scene sheets) the chapter caused.",
         input_schema: SCHEMAS.story_submit_chapter,
         worker_allowed: true,
       },

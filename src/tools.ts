@@ -47,9 +47,9 @@ import {
   upsertSection,
 } from "./docs";
 import { BriefData, briefView } from "./briefView";
-import { chapterFileName, writeBrief, writeChapter, writeColdRead, writeOwnerReview, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
+import { chapterFileName, writeBrief, writeChapter, writeColdRead, writeHandoffs, writeOwnerReview, writeRecaps, writeRecordSection, writeReview, writeState } from "./files";
 import { isOwnerRevisionId, redraftPending, underRevision } from "./ownerReview";
-import { Brief, ChapterDoc, ColdReadDoc, ColdReadItem, OwnerNoteAction, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, StageId, nowIso } from "./types";
+import { Brief, ChapterDoc, ColdReadDoc, ColdReadItem, Handoff, OwnerNoteAction, PipelineState, Recap, RECORD_SECTIONS, RecordSection, ReviewDoc, ReviewRound, StageId, nowIso } from "./types";
 
 const SESSION_ROLE_ERRORS: Record<SessionRole, string> = {
   context:
@@ -81,6 +81,9 @@ function mirrorChangedSections(projectId: string, sections: RecordSection[]): vo
     writeRecordSection(section, getRecordSection(projectId, section));
     if (section === "recaps") {
       writeRecaps(getRecordSection<Recap>(projectId, "recaps"));
+    }
+    if (section === "handoffs") {
+      writeHandoffs(getRecordSection<Handoff>(projectId, "handoffs"));
     }
   }
 }
@@ -135,7 +138,7 @@ export function toolAddStyleRules(args: any, _context: any): any {
 
 /// Get the story's living records (character sheets, relationships,
 /// who-knows-what, choices, setup/payoff, glossary, per-chapter state,
-/// scene sheets, recaps), optionally limited to some sections and/or capped
+/// scene sheets, recaps, handoffs), optionally limited to some sections and/or capped
 /// to chapter-indexed sections up to a given chapter.
 export function toolGetRecords(args: any, _context: any): any {
   validate(SCHEMAS.story_get_records, args ?? {});
@@ -149,7 +152,7 @@ export function toolGetRecords(args: any, _context: any): any {
   for (const section of RECORD_SECTIONS) {
     if (!wanted.includes(section)) continue;
     let items = getRecordSection(projectId, section);
-    if (chapterCap !== null && (section === "chapter_state" || section === "recaps")) {
+    if (chapterCap !== null && (section === "chapter_state" || section === "recaps" || section === "handoffs")) {
       items = items.filter((item: any) => typeof item?.chapter === "number" && item.chapter <= chapterCap);
     }
     records[section] = items;
@@ -240,7 +243,7 @@ function assertCurrentWriter(projectId: string, chapter: number, unitArg: string
   }
 }
 
-/// Store a chapter's text (and optional recap / records update), bumping its
+/// Store a chapter's text (and optional recap / handoff / records update), bumping its
 /// revision, and mirror it into story/chapters/.
 export function toolSubmitChapter(args: any, _context: any): any {
   validate(SCHEMAS.story_submit_chapter, args);
@@ -249,6 +252,7 @@ export function toolSubmitChapter(args: any, _context: any): any {
   const chapter: number = args.chapter;
   const markdown: string = args.markdown;
   const recap: string | null = typeof args.recap === "string" ? args.recap : null;
+  const handoff: string | null = typeof args.handoff === "string" ? args.handoff : null;
   assertCurrentWriter(projectId, chapter, typeof args.unit === "string" ? args.unit : null);
 
   // Records first: a rejected item fails the call before the chapter lands.
@@ -271,6 +275,12 @@ export function toolSubmitChapter(args: any, _context: any): any {
     const merged = upsertSection("recaps", getRecordSection(projectId, "recaps"), [{ chapter, recap }]);
     putRecordSection(projectId, "recaps", merged);
     mirrorChangedSections(projectId, ["recaps"]);
+  }
+
+  if (handoff !== null) {
+    const merged = upsertSection("handoffs", getRecordSection(projectId, "handoffs"), [{ chapter, notes: handoff }]);
+    putRecordSection(projectId, "handoffs", merged);
+    mirrorChangedSections(projectId, ["handoffs"]);
   }
 
   return { ok: true, path: `story/chapters/${chapterFileName(chapter)}`, revision: doc.revision };

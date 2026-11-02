@@ -283,6 +283,17 @@ export interface Recap {
   recap: string;
 }
 
+/// The cumulative continuity handoff a chapter leaves for the next one:
+/// the causal chain (this happened because that happened), the
+/// consequences still in play, the current relationships and why, and the
+/// open threads — carrying every item from the previous chapter's handoff
+/// forward. Chapters are written strictly in order, and chapter N+1's card
+/// embeds chapter N's handoff.
+export interface Handoff {
+  chapter: number;
+  notes: string;
+}
+
 /// Every record section, each a flat array of identity-keyed items. See
 /// `RECORD_ID_KEY` for the identity field used to upsert-merge each section.
 export interface Records {
@@ -295,6 +306,7 @@ export interface Records {
   chapter_state: ChapterState[];
   scene_sheets: SceneSheet[];
   recaps: Recap[];
+  handoffs: Handoff[];
 }
 
 export const RECORD_SECTIONS = [
@@ -307,6 +319,7 @@ export const RECORD_SECTIONS = [
   "chapter_state",
   "scene_sheets",
   "recaps",
+  "handoffs",
 ] as const;
 export type RecordSection = (typeof RECORD_SECTIONS)[number];
 
@@ -322,6 +335,7 @@ export const RECORD_ID_KEY: Record<RecordSection, string> = {
   chapter_state: "chapter",
   scene_sheets: "id",
   recaps: "chapter",
+  handoffs: "chapter",
 };
 /// Fields a NEW item (no existing item with the same identity) must carry.
 /// Updates to an existing item only need the identity field — the rest
@@ -336,6 +350,7 @@ export const RECORD_REQUIRED_FIELDS: Record<RecordSection, string[]> = {
   chapter_state: ["chapter"],
   scene_sheets: ["id", "chapter", "scene"],
   recaps: ["chapter", "recap"],
+  handoffs: ["chapter", "notes"],
 };
 
 
@@ -350,6 +365,7 @@ export function emptyRecords(): Records {
     chapter_state: [],
     scene_sheets: [],
     recaps: [],
+    handoffs: [],
   };
 }
 
@@ -525,6 +541,9 @@ export interface Unit {
   /// round opened.
   cold_reset?: boolean;
   settled?: boolean;
+  /// Chapter units: the card was unblocked (with the previous chapter's
+  /// handoff embedded) once that chapter cleared its cold read.
+  unblocked?: boolean;
   note?: string;
   created_at: string;
   updated_at: string;

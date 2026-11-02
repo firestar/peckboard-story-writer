@@ -7,7 +7,7 @@
 // the owner.
 
 import { renderLessons } from "./lessons";
-import { chapterPath, ownerReviewPath, TOOLS, UNIT_ARG_LINE } from "./contract";
+import { chapterPath, HANDOFF_UPDATE_LINE, ownerReviewPath, TOOLS, UNIT_ARG_LINE } from "./contract";
 import { briefSection, clip, DISCLAIMER, formatOf, lessonsFor, MAX_DESCRIPTION_CHARS, rulesSection, type PromptBrief } from "./templates";
 
 export const OWNER_REVIEW_FIXES_TOOL = "story_submit_owner_review_fixes";
@@ -152,6 +152,7 @@ export function renderOwnerReviewCard(input: OwnerReviewCardInput): OwnerReviewC
     "Push results only through story_* tools — the plugin stores them and writes the story/ files. Never write story/ files directly.",
     `Resubmit the revised chapter with story_submit_chapter {chapter:${chapter}, markdown, recap, records}, then record every note with ${OWNER_REVIEW_FIXES_TOOL}.`,
     UNIT_ARG_LINE,
+    HANDOFF_UPDATE_LINE,
     "Don't create, move or unblock pipeline cards — the plugin starts the cold read and opens the owner's next round when this card reaches done.",
   ].join("\n");
 

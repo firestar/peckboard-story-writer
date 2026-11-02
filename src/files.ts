@@ -12,6 +12,7 @@ import {
   ColdReadDoc,
   OWNER_NOTE_KIND_LABELS,
   OwnerReviewDoc,
+  Handoff,
   PipelineState,
   Recap,
   Records,
@@ -88,6 +89,12 @@ export function writeRecaps(recaps: Recap[]): void {
   const sorted = recaps.slice().sort((a, b) => a.chapter - b.chapter);
   const lines = sorted.flatMap((r) => [`## Chapter ${r.chapter}`, "", r.recap, ""]);
   writeFile(storyPath("recaps.md"), ["# Recaps", "", ...lines].join("\n"));
+}
+
+export function writeHandoffs(handoffs: Handoff[]): void {
+  const sorted = handoffs.slice().sort((a, b) => a.chapter - b.chapter);
+  const lines = sorted.flatMap((h) => [`## After chapter ${h.chapter}`, "", h.notes, ""]);
+  writeFile(storyPath("handoffs.md"), ["# Chapter handoffs", "", ...lines].join("\n"));
 }
 
 export function writeReview(doc: ReviewDoc): void {

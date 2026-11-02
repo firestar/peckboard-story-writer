@@ -85,6 +85,9 @@ export interface RenderInput {
   pass?: string;
   element?: string;
   feedbackText?: string;
+  /// Chapter cards 2..N: the previous chapter's cumulative handoff
+  /// (records.handoffs), embedded once that chapter has cleared.
+  handoff?: string;
 }
 
 export interface CardSpec {
@@ -95,6 +98,8 @@ export interface CardSpec {
 }
 
 export const MAX_DESCRIPTION_CHARS = 48000;
+/// The embedded handoff is clipped to this; the card points at the full text.
+export const MAX_HANDOFF_CHARS = 16000;
 
 /// Always banned on top of the story's own list (rulesSection); the wizard
 /// shows these as built-in.
@@ -399,9 +404,9 @@ function roleLine(kind: StageKind): string {
     case "records":
       return "Build the story's living records before any chapter is written.";
     case "pilot":
-      return "Write the pilot chapter alone; the owner reviews it before the rest fan out.";
+      return "Write the pilot chapter alone; the owner reviews it before the remaining chapters are written, one at a time, in order.";
     case "chapter":
-      return "Write this chapter.";
+      return "Write this chapter. Chapters are written strictly in order: this one follows from the previous chapter's handoff and leaves its own for the next.";
     case "review":
       return "Review and fix this chapter (or the whole novel), then report the verdict.";
     case "revision":
@@ -424,6 +429,9 @@ function taskFor(kind: StageKind, input: RenderInput & { chapter?: number; forma
     case "chapter":
       return [
         `Read the brief (story_get_brief, then ${briefCall("elements.plot_outline", "elements.setting")} for the outline and world), the records (story_get_records), and the recap of every earlier chapter.`,
+        kind === "pilot"
+          ? "This chapter starts the story's continuity handoff: every event you write here is a cause later chapters must follow from."
+          : `Read the handoff from chapter ${(input.chapter ?? 2) - 1} below in full before planning. Every event, reaction and attitude in this chapter must follow from it — this happens because that happened. Don't contradict, forget or reset any consequence or relationship it carries.`,
         "Build a scene-fact sheet per scene: time, place, light, who's present and where, what each person wants, what the lead carries/wears/is injured by, and up to 3 unexplained names/terms/rules with an answered_in reference.",
         input.format === "vn"
           ? "Look at this chapter's background art and sprites before writing each scene; let the setting drive what happens."
@@ -431,7 +439,10 @@ function taskFor(kind: StageKind, input: RenderInput & { chapter?: number; forma
         "Write the whole chapter scene by scene — never line by line. No jokes, no filler; fights run in phases with a low point before the turn.",
         "Read the full chapter once as a reader; fix anything that doesn't connect to the lines around it; re-read until a full read finds nothing.",
         "Update the records that changed (chapter state, who-knows-what, setup/payoff, glossary) last, and write a short recap. For every character this chapter introduces for the first time, set their first_intro: {chapter, scene, line} to the exact line that introduces them.",
-        "Submit with story_submit_chapter.",
+        kind === "pilot"
+          ? "Write the handoff for the next chapter (markdown, these headings): ## Causal chain (what happened because of what, with chapter numbers), ## Consequences still in play (injuries, debts, promises, threats, grudges, secrets, who knows what), ## Relationships now (each pair: current state and why it changed, with chapter), ## Open threads (what the next chapter must pick up)."
+          : "Write the handoff for the next chapter: start from the previous handoff and carry EVERY item forward under the same headings (## Causal chain, ## Consequences still in play, ## Relationships now, ## Open threads) — mark an item resolved (and how, in which chapter) instead of dropping it — then add what this chapter caused and changed. It must stand alone: the next writer reads only this handoff, not the earlier ones.",
+        "Submit with story_submit_chapter {chapter, markdown, recap, handoff, records}.",
       ];
     case "review":
       return [
@@ -479,7 +490,8 @@ function doneFor(kind: StageKind): string[] {
         "The chapter reads clean start to finish",
         "Every line has a reason; nothing contradicts the records or the setting",
         "Records updated and a recap written; every newly introduced character has a first_intro",
-        "story_submit_chapter called",
+        "A cumulative handoff submitted: every earlier consequence and relationship carried forward, this chapter's causes and changes added",
+        "story_submit_chapter called with the handoff",
       ];
     case "review":
       return ["A full read finds nothing left to fix for this pass", "Past fixes from the checklist are still in place", "story_report_review called"];
@@ -490,6 +502,21 @@ function doneFor(kind: StageKind): string[] {
   }
 }
 
+/// The previous chapter's cumulative handoff, embedded on chapter N's card
+/// once chapter N−1 cleared (src/pipeline.ts advanceChapters). A card
+/// created blocked, before that, says where the handoff will come from.
+function handoffSection(chapter: number, handoff: string | undefined): string {
+  const prev = chapter - 1;
+  const fetch = `story_get_records {sections:["handoffs"], chapter:${prev}}`;
+  const head = `## Handoff from chapter ${prev}`;
+  if (!handoff || handoff.trim() === "") {
+    return `${head}\n\nNot written yet — this card unblocks once chapter ${prev} is written and has cleared its cold read. Read it then with ${fetch} (the chapter ${prev} entry).`;
+  }
+  const clipped = clip(handoff, MAX_HANDOFF_CHARS);
+  const more = clipped.length < handoff.trim().length ? `\n\n(Cut to fit the card — read the full handoff with ${fetch}.)` : "";
+  return `${head}\n\nWhat has happened so far and why, the consequences still in play, and where every relationship stands. This chapter continues from exactly here.\n\n${clipped}${more}`;
+
+}
 /// Render one pipeline card's title + description for the given stage.
 export function renderCard(kind: StageKind, input: RenderInput): CardSpec {
   const brief = input.brief;
@@ -519,6 +546,7 @@ export function renderCard(kind: StageKind, input: RenderInput): CardSpec {
 
   const header = `# ${title}\n\n${roleLine(kind)}\n\n${DISCLAIMER}`;
   const briefMd = briefSection(brief);
+  const handoffMd = kind === "chapter" ? handoffSection(chapter as number, input.handoff) : "";
   const taskLines = taskFor(kind, resolved);
   const taskMd = `## Task\n\n${taskLines.map((l, i) => `${i + 1}. ${l}`).join("\n")}`;
   const doneMd = `## Done when\n\n${doneFor(kind).map((l) => `- [ ] ${l}`).join("\n")}`;
@@ -527,7 +555,7 @@ export function renderCard(kind: StageKind, input: RenderInput): CardSpec {
 
   // Lessons are never cut. Story rules are trimmed last-first only if the
   // card can't fit them at all; feedback fills whatever budget is left.
-  const assemble = (rulesMd: string) => [header, briefMd, rulesMd, taskMd, doneMd, contractMd, lessonsMd].join("\n\n");
+  const assemble = (rulesMd: string) => [header, briefMd, handoffMd, rulesMd, taskMd, doneMd, contractMd, lessonsMd].filter((s) => s !== "").join("\n\n");
   let keep = storyRules(brief).length;
   let rulesMd = rulesSection(brief, keep);
   let core = assemble(rulesMd);
@@ -540,7 +568,9 @@ export function renderCard(kind: StageKind, input: RenderInput): CardSpec {
   const budget = Math.max(0, MAX_DESCRIPTION_CHARS - core.length - "\n\n".length);
   const feedbackMd = feedbackSection(feedback, budget);
 
-  const description = feedbackMd ? [header, briefMd, feedbackMd, rulesMd, taskMd, doneMd, contractMd, lessonsMd].join("\n\n") : core;
+  const description = feedbackMd
+    ? [header, briefMd, handoffMd, feedbackMd, rulesMd, taskMd, doneMd, contractMd, lessonsMd].filter((s) => s !== "").join("\n\n")
+    : core;
 
   return { title, description, role, kind };
 }

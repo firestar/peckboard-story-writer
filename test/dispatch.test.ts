@@ -53,6 +53,7 @@ const EMPTY_RECORDS = {
   chapter_state: [],
   scene_sheets: [],
   recaps: [],
+  handoffs: [],
 };
 
 describe("dispatch: unhandled hooks", () => {
