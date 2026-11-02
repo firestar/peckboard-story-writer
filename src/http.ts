@@ -22,6 +22,7 @@ import {
   requestOwnerNote,
   requestOwnerNoteDelete,
   requestOwnerNoteUpdate,
+  requestRecreate,
   requestRetry,
   requestStart,
 } from "./pipeline";
@@ -89,6 +90,9 @@ export function serveAuthed(payload: any): string {
     }
     if (method === "POST" && path === `${API}/pipeline/retry`) {
       return jsonResponse(200, pipelineRetry(parseBody(body)));
+    }
+    if (method === "POST" && path === `${API}/pipeline/recreate`) {
+      return jsonResponse(200, requestRecreate(requireProjectId()));
     }
     if (method === "GET" && path === `${API}/export`) {
       return jsonResponse(200, assembleExport(requireProjectId()));

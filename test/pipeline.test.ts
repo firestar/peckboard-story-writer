@@ -255,6 +255,60 @@ describe("pipeline engine: chapter handoffs", () => {
     expect(invoke("story_get_records", { sections: ["handoffs"] }).records.handoffs).toHaveLength(2);
     expect(files["story/handoffs.md"]).toContain("after two");
   });
+
+describe("pipeline engine: recreate cards", () => {
+  it("replaces every open card with a fresh one (current prompts and order), closes the old ones, and keeps finished work", () => {
+    setupBrief();
+    authed("POST", "/pipeline/start");
+    finishCard(cards, cards.cards[0].id);
+    const pilotCard = cards.cards.find((c) => c.title.startsWith("Pilot"))!;
+    submitAndFinish(cards, pilotCard.id, 1);
+    finishColdRead(cards, 1);
+    authed("POST", "/pipeline/approve");
+
+    // Simulate an older pipeline that unblocked every chapter at once.
+    const oldCh2 = cards.cards.find((c) => c.title === "Chapter 2")!;
+    const oldCh3 = cards.cards.find((c) => c.title === "Chapter 3")!;
+    oldCh3.blocked = false;
+    const staleUnit = unitOf(oldCh2);
+
+    const res = authed("POST", "/pipeline/recreate");
+    expect(res.status).toBe(200);
+    expect(res.body.recreated.sort()).toEqual(["chapter:2", "chapter:3"]);
+
+    // Old cards closed; fresh ones for the same units, ordered again.
+    expect(oldCh2.step).toBe("wont_do");
+    expect(oldCh3.step).toBe("wont_do");
+    const ch2 = open(cards.cards).find((c) => c.title === "Chapter 2")!;
+    const ch3 = open(cards.cards).find((c) => c.title === "Chapter 3")!;
+    expect(ch2.id).not.toBe(oldCh2.id);
+    expect(ch2.blocked).toBe(false);
+    expect(ch2.description).toContain("## Handoff from chapter 1");
+    expect(ch3.id).not.toBe(oldCh3.id);
+    expect(ch3.blocked).toBe(true);
+
+    const st = authed("GET", "/state").body;
+    expect(st.engine.units["chapter:2"]).toMatchObject({ status: "open", attempt: 2, card_id: ch2.id });
+    expect(st.engine.units.pilot.status).toBe("done");
+    expect(st.engine.retire).toBeUndefined();
+
+    // The replaced card's worker can't submit any more; the old card's
+    // won't-do event doesn't fail the unit.
+    expect(invoke("story_submit_chapter", { chapter: 2, markdown: "x", handoff: "h", unit: staleUnit }).error).toContain("no longer current");
+    cardStep(cards, oldCh2.id, "wont_do");
+    expect(authed("GET", "/state").body.engine.units["chapter:2"].status).toBe("open");
+
+    // The pipeline carries on from the fresh cards.
+    submitAndFinish(cards, ch2.id, 2);
+    finishColdRead(cards, 2);
+    expect(cards.cards.find((c) => c.id === ch3.id)!.blocked).toBe(false);
+  });
+
+  it("refuses when there is nothing to recreate", () => {
+    setupBrief();
+    expect(authed("POST", "/pipeline/recreate").status).toBe(409);
+  });
+});
 });
 describe("pipeline engine: owner review gate", () => {
   it("rejects approve before the pilot is reviewable, and while a pilot revision is open", () => {

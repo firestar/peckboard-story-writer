@@ -85,6 +85,7 @@ export function manifestJson(): string {
       "POST /api/plugin-ui/story-writer/pipeline/approve",
       "POST /api/plugin-ui/story-writer/pipeline/feedback",
       "POST /api/plugin-ui/story-writer/pipeline/retry",
+      "POST /api/plugin-ui/story-writer/pipeline/recreate",
       "GET /api/plugin-ui/story-writer/export",
       "GET /api/plugin-ui/story-writer/cards",
       "GET /api/plugin-ui/story-writer/chapter",

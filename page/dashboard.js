@@ -208,7 +208,8 @@ export function mountDashboard(container, opts) {
   let unexFilter = "all";
   let notice = null; // {tone, text}
   let confirming = false; // the Approve confirmation is showing
-  const busy = new Set(); // "approve", "export", "retry:<id>", "note", "note:<id>", "decide:<n>"
+  let recreateAsk = false; // the "Recreate cards" confirmation is showing
+  const busy = new Set(); // "approve", "export", "retry:<id>", "recreate", "note", "note:<id>", "decide:<n>"
   // Owner review (SW-12): the note popover over a passage, the note being
   // edited, and the open "Request changes" form.
   let pop = null; // {chapter, start, end, quote, x, y, kind, draft, error}
@@ -343,7 +344,7 @@ export function mountDashboard(container, opts) {
       "approve",
       () => postJSON(`${P}/pipeline/approve`),
       g.remaining
-        ? `Pilot approved. The other ${plural(g.remaining, "chapter")} are being written in parallel.`
+        ? `Pilot approved. Chapter 2 is being written${g.remaining > 1 ? `; the other ${plural(g.remaining - 1, "chapter")} follow in order` : ""}.`
         : "Pilot approved. The review passes start next.",
       inDrawer,
     );
@@ -450,6 +451,18 @@ export function mountDashboard(container, opts) {
 
   function retry(unit) {
     return act(`retry:${unit || "all"}`, () => postJSON(`${P}/pipeline/retry`, unit ? { unit } : {}), "Retrying — a fresh card is on its way to the board.");
+  }
+
+  function recreate() {
+    return act(
+      "recreate",
+      async () => {
+        await postJSON(`${P}/pipeline/recreate`);
+        recreateAsk = false;
+        focusFid = "recreate";
+      },
+      "Recreating — the old cards move to won't-do and fresh ones are on their way to the board.",
+    );
   }
 
   async function exportStory() {
@@ -597,6 +610,7 @@ export function mountDashboard(container, opts) {
       { class: "sw-dash" },
       buildHeader(),
       notice ? buildNotice() : null,
+      recreateAsk ? buildRecreateAsk() : null,
       buildGate(),
       buildProblems(),
       buildFinished(),
@@ -756,7 +770,65 @@ export function mountDashboard(container, opts) {
         exporting ? h("span", { class: "sw-spinner" }) : icon("download"),
         "Export",
       ),
+      recreateBtn(),
       h("button", { class: "sw-btn secondary", type: "button", dataset: { fid: "setup" }, onclick: opts.onShowSetup }, "View setup"),
+    );
+  }
+
+  /// Header button: ask before replacing the pipeline's cards.
+  function recreateBtn() {
+    const n = D.recreatableUnits(state).length;
+    return h(
+      "button",
+      {
+        class: "sw-btn secondary",
+        type: "button",
+        disabled: !n || busy.has("recreate"),
+        title: n ? "Replace every open pipeline card with a fresh one built from the current prompts" : "No open pipeline cards to recreate",
+        dataset: { fid: "recreate" },
+        onclick: () => {
+          recreateAsk = true;
+          focusFid = "recreate.yes";
+          render();
+        },
+      },
+      icon("retry"),
+      "Recreate cards…",
+    );
+  }
+
+  function buildRecreateAsk() {
+    const n = D.recreatableUnits(state).length;
+    const working = busy.has("recreate");
+    return banner(
+      "warn",
+      [
+        h("strong", null, `Recreate ${plural(n, "pipeline card")}? `),
+        "Each open card moves to won't-do — any worker on it stops and its unsubmitted work is lost — and a fresh card for the same step is created with the current prompts and chapter order. Failed cards are retried. Finished chapters, records and reviews are kept.",
+      ],
+      [
+        h(
+          "button",
+          { class: "sw-btn sm", type: "button", disabled: working || !n, dataset: { fid: "recreate.yes" }, onclick: recreate },
+          working ? h("span", { class: "sw-spinner" }) : icon("retry"),
+          `Recreate ${plural(n, "card")}`,
+        ),
+        h(
+          "button",
+          {
+            class: "sw-btn sm secondary",
+            type: "button",
+            disabled: working,
+            dataset: { fid: "recreate.no" },
+            onclick: () => {
+              recreateAsk = false;
+              focusFid = "recreate";
+              render();
+            },
+          },
+          "Cancel",
+        ),
+      ],
     );
   }
 
@@ -882,7 +954,7 @@ export function mountDashboard(container, opts) {
           unsent
             ? `You have ${plural(unsent, "note")} not sent yet — request changes to send ${unsent === 1 ? "it" : "them"} to the writer, or delete ${unsent === 1 ? "it" : "them"}, before approving.`
             : g.remaining
-              ? `Approve it to write the other ${plural(g.remaining, "chapter")} in parallel — or request changes for a redraft first.`
+              ? `Approve it to write the other ${plural(g.remaining, "chapter")}, one at a time in order — or request changes for a redraft first.`
               : "Approve it to start the review passes — or request changes for a redraft first.",
         ];
     return h(

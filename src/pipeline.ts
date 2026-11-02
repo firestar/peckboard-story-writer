@@ -361,6 +361,24 @@ function reconcileEvent(ctx: Ctx, cardId: string, newStep: string): void {
   ctx.dirty = true;
 }
 
+/// Move the cards "Recreate cards" replaced to won't-do (stopping any worker
+/// on them), within the run's deadline; the rest wait for the next run.
+/// Their units already point at no card, so the resulting card.step.after
+/// events match nothing. A card that can't be updated (deleted) is dropped.
+function closeRetired(ctx: Ctx): void {
+  const queue = ctx.engine.retire;
+  if (!queue || queue.length === 0) return;
+  while (queue.length > 0 && Date.now() < ctx.budget.deadline) {
+    const cardId = queue.shift() as string;
+    try {
+      updateCard({ card_id: cardId, step: "wont_do" });
+    } catch (_e) {
+      // already gone from the board — nothing left to close
+    }
+  }
+  if (queue.length === 0) delete ctx.engine.retire;
+  ctx.dirty = true;
+}
 /// timer.tick's safety net for a dropped card.step.after or a deleted card.
 function reconcileSweep(ctx: Ctx): void {
   const open = Object.values(ctx.engine.units).filter((u) => u.status === "open" && u.card_id !== null);
@@ -934,6 +952,7 @@ export function runEngine(projectId: string, budget: Budget = newBudget(), trigg
   };
   try {
     adoptOrphans(ctx);
+    closeRetired(ctx);
     if (trigger.event) reconcileEvent(ctx, trigger.event.card_id, trigger.event.new_step);
     if (trigger.sweep) reconcileSweep(ctx);
     materializeFeedbackRevisions(ctx);
@@ -1327,6 +1346,35 @@ export function requestRetry(projectId: string, unitId?: string): { ok: true; re
   putEngine(projectId, engine);
   if (targets.length > 0) runEngine(projectId);
   return { ok: true, retried: targets };
+}
+
+/// "Recreate cards": replace every open pipeline card with a fresh one for
+/// the same unit, rendered from the current prompts and placed by the
+/// current ordering (a chapter not yet due comes back blocked). Each open
+/// unit gets a new attempt and no card — the next engine run creates its
+/// card again — and its old card is queued to move to won't-do (which stops
+/// its worker; a submit from it is refused as no longer current). Failed
+/// units are reset too, as a retry would. Finished work is kept.
+export function requestRecreate(projectId: string): { ok: true; recreated: string[]; closing: number } {
+  const engine = getEngine(projectId);
+  const targets = Object.values(engine.units).filter((u) => (u.status === "open" && u.card_id !== null) || u.status === "failed");
+  if (targets.length === 0) throw new PipelineConflict("no open pipeline cards to recreate");
+
+  const retire = engine.retire ?? [];
+  for (const unit of targets) {
+    if (unit.status === "open" && unit.card_id !== null) retire.push(unit.card_id);
+    unit.status = "open";
+    unit.card_id = null;
+    unit.attempt += 1;
+    unit.note = undefined;
+    unit.unblocked = undefined;
+    unit.updated_at = nowIso();
+  }
+  if (retire.length > 0) engine.retire = retire;
+  engine.updated_at = nowIso();
+  putEngine(projectId, engine);
+  runEngine(projectId);
+  return { ok: true, recreated: targets.map((u) => u.id), closing: retire.length };
 }
 
 /// Assemble every submitted chapter (ascending) into one manuscript for

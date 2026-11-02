@@ -70,7 +70,7 @@ export const STAGES = [
   {
     id: "chapters",
     label: "Chapters",
-    blurb: "The remaining chapters, written in parallel once you approve the pilot. Each gets its own cold read and cold-read fix before the review passes.",
+    blurb: "The remaining chapters, written one at a time in order once you approve the pilot — each from the previous chapter's handoff of what happened, why, and where every relationship stands. Each gets its own cold read and cold-read fix before the next one starts.",
   },
   {
     id: "review",
@@ -251,6 +251,12 @@ export function unitStatus(unit, cards) {
 
 export function failedUnits(state) {
   return sortedUnits(state).filter((u) => u.status === "failed" && u.kind !== "generate");
+}
+
+/// Units "Recreate cards" replaces: every open one that has a card, plus
+/// every failed one (reset as a retry would).
+export function recreatableUnits(state) {
+  return Object.values(engineOf(state).units).filter((u) => (u.status === "open" && u.card_id) || u.status === "failed");
 }
 
 // ── Stages ───────────────────────────────────────────────────────────────

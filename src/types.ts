@@ -579,6 +579,9 @@ export interface EngineState {
   // died mid-create, so cards are matched by marker before creating more.
   in_flight?: boolean;
   swept_at?: string | null; // last timer.tick full card-list reconcile
+  /// Cards replaced by "Recreate cards" (requestRecreate) still to be moved
+  /// to won't-do; each engine run closes what fits in its budget first.
+  retire?: string[];
   updated_at: string;
 }
 

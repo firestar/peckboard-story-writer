@@ -925,7 +925,7 @@ export function mountWizard(container, opts) {
           { help: b.format === "vn" ? "Scenes, sprites, backgrounds and reader choices." : "Chapters of narrative prose." },
         ),
         field("Chapters", "f-chapters", chapterInput(), {
-          help: `The pilot chapter comes first; once you approve it, the rest are written in parallel. Up to ${maxChapters}.`,
+          help: `The pilot chapter comes first; once you approve it, the rest are written one at a time, in order. Up to ${maxChapters}.`,
         }),
         field("Point of view", "f-pov", choice("basics.pov", b.pov, M.POVS, (v, t) => set("pov", v, t), { id: "f-pov", disabled: readOnly, ariaLabel: "Point of view" })),
         field("Tense", "f-tense", select("basics.tense", b.tense, M.TENSES, (v) => set("tense", v), { id: "f-tense", disabled: readOnly })),
