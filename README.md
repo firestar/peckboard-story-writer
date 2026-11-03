@@ -79,6 +79,10 @@ registry.
 | `writer_model` | Model assigned to pilot-chapter and chapter-drafting cards. |
 | `reviewer_model` | Model assigned to the structure/character/pacing/line/copyedit review-pass cards. |
 
+Both are `model` fields: Settings -> Plugins shows a searchable picker over the model catalog,
+and an id the catalog doesn't list can still be typed in. Requires PeckBoard 0.1.130 or later —
+older cores fail to parse the manifest.
+
 Both default to Claude Opus 5.5
 (`claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333`) — the owner rejected GPT-5.6 Sol's
 prose. Judge any writer model by a pilot chapter the owner actually plays; switch models when a

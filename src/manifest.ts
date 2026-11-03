@@ -106,7 +106,7 @@ export function manifestJson(): string {
           "a pilot chapter the owner plays, and switch models when a pilot fails, rather than " +
           "adding more rules.",
         required: false,
-        type: "string",
+        type: "model",
         default: DEFAULT_WRITER_MODEL,
         placeholder: DEFAULT_WRITER_MODEL,
       },
@@ -118,7 +118,7 @@ export function manifestJson(): string {
           "character / pacing / line / copyedit review-pass cards, and to the cold-read (C1) " +
           "card — always a FRESH session with no story context, only the chapter text.",
         required: false,
-        type: "string",
+        type: "model",
         placeholder: "claude:claude-opus-5-5@<account>",
       },
     ],

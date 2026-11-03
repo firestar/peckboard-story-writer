@@ -197,7 +197,8 @@ describe("manifest", () => {
     const keys = manifest.settings.map((s: any) => s.key);
     expect(keys).toEqual(["writer_model", "reviewer_model"]);
     for (const field of manifest.settings) {
-      expect(field.type).toBe("string");
+      // `model` (core >= 0.1.130) renders a searchable picker over /api/models.
+      expect(field.type).toBe("model");
       expect(field.required).toBeFalsy();
     }
     const writer = manifest.settings.find((s: any) => s.key === "writer_model");
