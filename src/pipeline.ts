@@ -50,6 +50,8 @@ import {
   putCards,
   putEngine,
   putPipelineState,
+  getStoryModels,
+  putStoryModels,
 } from "./docs";
 import { PromptBrief, PromptFeedback, draftKey, renderCard } from "./prompts";
 import { renderColdReadCard, renderColdReadFixCard } from "./prompts/coldRead";
@@ -81,6 +83,7 @@ import {
   MAX_OWNER_NOTES_PER_ROUND,
   OwnerNote,
   MAX_OWNER_SUMMARY_CHARS,
+  MAX_MODEL_ID_CHARS,
   OwnerReviewDoc,
   OwnerReviewRound,
   ReviewCursor,
@@ -91,6 +94,8 @@ import {
   StageId,
   StageStatus,
   StoryElements,
+  StoryModels,
+  WriterSlot,
   UnitKind,
   Unit,
   nowIso,
@@ -133,6 +138,8 @@ interface Ctx {
   brief: Brief | null;
   feedback: Feedback[];
   engine: EngineState;
+  /// The story's writer model picks, read once per run.
+  models: StoryModels;
   budget: Budget;
   dirty: boolean;
   wroteAhead: boolean; // this run persisted engine.in_flight before creating a card
@@ -183,13 +190,75 @@ function unitMarker(id: string, attempt: number): string {
   return `<!-- story-writer:unit=${id}#${attempt} -->`;
 }
 
-/// The model the pipeline assigns to a role's cards: the plugin setting,
-/// else the writer default (reviewer cards fall back to the host default).
-/// Also shown in the setup wizard (GET /defaults).
+/// The model the pipeline assigns to a role's cards from the plugin
+/// settings alone: writer_model else the writer default; reviewer cards
+/// fall back to the host default. Writer cards go through
+/// resolveWriterModel, which layers the story's own picks on top.
 export function modelFor(role: "writer" | "reviewer"): string | undefined {
-  const raw = getPluginSetting(role === "writer" ? "writer_model" : "reviewer_model");
-  const trimmed = typeof raw === "string" && raw.trim() !== "" ? raw.trim() : undefined;
-  return trimmed ?? (role === "writer" ? DEFAULT_WRITER_MODEL : undefined);
+  return role === "writer" ? (settingModel("writer_model") ?? DEFAULT_WRITER_MODEL) : settingModel("reviewer_model");
+}
+
+function settingModel(key: string): string | undefined {
+  const raw = getPluginSetting(key);
+  return typeof raw === "string" && raw.trim() !== "" ? raw.trim() : undefined;
+}
+
+/// Chapter 1 is the pilot; records, generated elements and story-wide
+/// revisions (no chapter) belong to the pilot writer too.
+export function writerSlot(chapter: number | undefined): WriterSlot {
+  return typeof chapter === "number" && chapter >= 2 ? "chapter" : "pilot";
+}
+
+/// Where a writer slot's model came from: the story's pick, the plugin
+/// setting, the built-in default, or (chapter slot only) the pilot's model.
+export type ModelSource = "story" | "setting" | "default" | "pilot";
+
+export interface ResolvedModel {
+  id: string;
+  source: ModelSource;
+}
+
+/// A writer slot's model for this story:
+///   pilot:   story pick -> writer_model setting -> DEFAULT_WRITER_MODEL
+///   chapter: story pick -> chapter_writer_model setting -> the pilot's model
+/// so with nothing set every writer card runs on writer_model, as before.
+export function resolveWriterModel(slot: WriterSlot, story: StoryModels): ResolvedModel {
+  const pick = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v.trim() : undefined);
+  if (slot === "chapter") {
+    const own = pick(story.chapter);
+    if (own) return { id: own, source: "story" };
+    const setting = settingModel("chapter_writer_model");
+    if (setting) return { id: setting, source: "setting" };
+    return { id: resolveWriterModel("pilot", story).id, source: "pilot" };
+  }
+  const own = pick(story.pilot);
+  if (own) return { id: own, source: "story" };
+  const setting = settingModel("writer_model");
+  return setting ? { id: setting, source: "setting" } : { id: DEFAULT_WRITER_MODEL, source: "default" };
+}
+
+/// Save the story's writer picks (the Story tab's pickers). Only the slots
+/// present in `body` change; a blank string clears that slot back to the
+/// plugin settings. Applies to cards created from now on — open cards keep
+/// their model ("Recreate cards" replaces them).
+export function requestSetStoryModels(projectId: string, body: any): { ok: true; models: StoryModels } {
+  const next: StoryModels = { ...getStoryModels(projectId) };
+  let touched = false;
+  for (const slot of ["pilot", "chapter"] as const) {
+    if (!(body && slot in body)) continue;
+    const raw = body[slot];
+    if (raw !== null && typeof raw !== "string") throw new Error(`${slot} must be a model id string (or "" to clear)`);
+    const id = (raw ?? "").trim();
+    if (id.length > MAX_MODEL_ID_CHARS) throw new Error(`${slot} model id is longer than ${MAX_MODEL_ID_CHARS} characters`);
+    if (/[\u0000-\u001f\u007f]/.test(id)) throw new Error(`${slot} model id contains control characters`);
+    if (id) next[slot] = id;
+    else delete next[slot];
+    touched = true;
+  }
+  if (!touched) throw new Error("pilot and/or chapter is required");
+  next.updated_at = nowIso();
+  putStoryModels(projectId, next);
+  return { ok: true, models: next };
 }
 
 /// Create a card, retrying once without a model if the host rejects it
@@ -259,7 +328,7 @@ function materialize(ctx: Ctx, unit: Unit, spec: UnitSpec): void {
               handoff: spec.handoff,
             });
   const description = `${rendered.description}\n\n${marker}`;
-  const model = modelFor(rendered.role);
+  const model = rendered.role === "writer" ? resolveWriterModel(writerSlot(spec.chapter), ctx.models).id : modelFor("reviewer");
   const input: CreateCardInput = {
     project_id: ctx.projectId,
     title: rendered.title,
@@ -944,6 +1013,7 @@ export function runEngine(projectId: string, budget: Budget = newBudget(), trigg
   const ctx: Ctx = {
     projectId,
     brief: getBrief(projectId),
+    models: getStoryModels(projectId),
     feedback: getFeedback(projectId),
     engine: getEngine(projectId),
     budget,

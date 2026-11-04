@@ -177,3 +177,31 @@ describe("page model: element view and start gate", () => {
     expect(w).toContain("basics");
   });
 });
+
+describe("page model: writer model pickers", () => {
+  const catalog = [
+    { id: "claude:claude-opus-5-5@acc_a", display_name: "Claude Opus 5.5 (Work)" },
+    { id: "claude:claude-sonnet-5@acc_a", display_name: "Claude Sonnet 5 (Work)" },
+    { id: "ollama:qwen2.5-coder", display_name: "Qwen 2.5 Coder (Ollama)" },
+    { id: 7 },
+    null,
+  ];
+
+  it("matches every search term against the name or the id, keeping catalog order", () => {
+    expect(M.filterModels(catalog, "").map((m: any) => m.id)).toHaveLength(3);
+    expect(M.filterModels(catalog, "opus").map((m: any) => m.id)).toEqual(["claude:claude-opus-5-5@acc_a"]);
+    expect(M.filterModels(catalog, "WORK claude").map((m: any) => m.id)).toEqual(["claude:claude-opus-5-5@acc_a", "claude:claude-sonnet-5@acc_a"]);
+    expect(M.filterModels(catalog, "acc_a sonnet").map((m: any) => m.id)).toEqual(["claude:claude-sonnet-5@acc_a"]);
+    expect(M.filterModels(catalog, "gpt")).toEqual([]);
+  });
+
+  it("caps the result and tolerates a missing catalog", () => {
+    expect(M.filterModels(catalog, "", 1)).toHaveLength(1);
+    expect(M.filterModels(undefined, "x")).toEqual([]);
+  });
+
+  it("labels both writer slots and every model source the server reports", () => {
+    expect(M.WRITER_SLOTS.map((s: any) => s.slot)).toEqual(["pilot", "chapter"]);
+    for (const source of ["story", "setting", "default", "pilot"]) expect(M.MODEL_SOURCES[source]).toBeTruthy();
+  });
+});

@@ -8,6 +8,22 @@
 /// ugly"); judge any writer model by a pilot chapter the owner plays, and
 /// switch models when a pilot fails, rather than adding more rules.
 export const DEFAULT_WRITER_MODEL = "claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333";
+/// Which writer a card belongs to: the pilot writer (records, generated
+/// elements, chapter 1 and its fixes/revisions) or the chapter writer
+/// (chapters 2..N and their fixes/revisions).
+export type WriterSlot = "pilot" | "chapter";
+
+/// The owner's per-story writer model picks (Story tab), one doc per
+/// project. A missing or blank slot falls back to the plugin settings —
+/// see pipeline.ts resolveWriterModel.
+export interface StoryModels {
+  pilot?: string;
+  chapter?: string;
+  updated_at?: string;
+}
+
+/// Longest model id accepted from the Story tab's pickers.
+export const MAX_MODEL_ID_CHARS = 200;
 
 /// Per-element authoring mode, chosen in the setup wizard.
 export type ElementMode = "write" | "draft" | "generate";

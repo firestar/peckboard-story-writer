@@ -260,6 +260,34 @@ h1, h2, h3 { margin: 0; line-height: 1.3; }
 .sw-summary.sw-models-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .sw-models-list dd { display: flex; align-items: center; gap: 8px; }
 .sw-model-default { flex: none; }
+.sw-model-where { font-size: .75rem; }
+
+/* ── writer model pickers (page/models.js) ───────────────── */
+.sw-model-picks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 20px; margin: 4px 0 16px; }
+.sw-model-help { margin: 0; }
+.sw-combo { position: relative; }
+.sw-combo-input { padding-right: 30px; }
+.sw-combo-input[readonly] { color: var(--text2); }
+.sw-combo-caret { position: absolute; right: 12px; top: 50%; width: 7px; height: 7px; border-right: 1.5px solid var(--text3); border-bottom: 1.5px solid var(--text3); transform: translateY(-70%) rotate(45deg); pointer-events: none; }
+.sw-combo-spin { position: absolute; right: 10px; top: calc(50% - 6px); color: var(--text3); }
+.sw-combo-list { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 10px 28px rgba(16, 24, 40, .14); max-height: 300px; overflow-y: auto; }
+:root[data-theme="dark"] .sw-combo-list { box-shadow: 0 10px 28px rgba(0, 0, 0, .55); }
+.sw-combo-opt { display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: 6px; cursor: pointer; }
+.sw-combo-opt[aria-selected="true"] { background: var(--surface-hover); }
+.sw-combo-opt.default { margin-bottom: 4px; position: relative; }
+.sw-combo-opt.default::after { content: ""; position: absolute; left: 4px; right: 4px; bottom: -3px; border-bottom: 1px solid var(--border); }
+.sw-combo-opt.current .sw-combo-name::after { content: "✓"; margin-left: 6px; color: var(--accent-text); font-weight: 600; }
+.sw-combo-name { font-size: .8125rem; color: var(--text); }
+.sw-combo-id { font-size: .6875rem; color: var(--text3); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.sw-combo-src { font-size: .75rem; color: var(--text3); }
+.sw-combo-note { padding: 6px 9px; font-size: .75rem; color: var(--text3); }
+.sw-combo-note.err { color: var(--danger-text); }
+.sw-model-using { margin: 0; font-size: .75rem; color: var(--text2); display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: center; }
+.sw-model-using strong { font-weight: 600; color: var(--text); }
+.sw-model-missing { padding: 0 6px; font-size: .6875rem; }
+.sw-models-panel { margin-bottom: 16px; }
+.sw-btn.secondary.on { background: var(--accent-subtle); border-color: var(--accent-muted); color: var(--accent-text); }
+@media (max-width: 640px) { .sw-model-picks { grid-template-columns: 1fr; } }
 .sw-lesson { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
 .sw-lesson.off { background: var(--surface2); }
 .sw-lesson.off .sw-lesson-preview { text-decoration: line-through; opacity: .6; }

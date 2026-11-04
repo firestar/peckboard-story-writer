@@ -9,7 +9,7 @@
 import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
 import { listCards, listModels, requireProjectId } from "./host";
-import { getAllRecords, getBrief, getCards, getChapter, getEngine, getFeedback, getPipelineState, listChapters, listColdReads, listOwnerReviews, listReviews, putBrief } from "./docs";
+import { getAllRecords, getBrief, getCards, getChapter, getEngine, getFeedback, getPipelineState, getStoryModels, listChapters, listColdReads, listOwnerReviews, listReviews, putBrief } from "./docs";
 import {
   MAX_CHAPTERS,
   PipelineConflict,
@@ -24,7 +24,9 @@ import {
   requestOwnerNoteUpdate,
   requestRecreate,
   requestRetry,
+  requestSetStoryModels,
   requestStart,
+  resolveWriterModel,
 } from "./pipeline";
 import { DEFAULT_BANNED, styleGuide } from "./prompts";
 import { mergeWizardUpdate, normalizeBrief } from "./wizard";
@@ -93,6 +95,9 @@ export function serveAuthed(payload: any): string {
     }
     if (method === "POST" && path === `${API}/pipeline/recreate`) {
       return jsonResponse(200, requestRecreate(requireProjectId()));
+    }
+    if (method === "POST" && path === `${API}/models/story`) {
+      return jsonResponse(200, requestSetStoryModels(requireProjectId(), parseBody(body)));
     }
     if (method === "GET" && path === `${API}/export`) {
       return jsonResponse(200, assembleExport(requireProjectId()));
@@ -174,9 +179,9 @@ function getState(): any {
     cards: getCards(projectId),
     cold_reads: listColdReads(projectId),
     owner_reviews: listOwnerReviews(projectId),
+    models: storyModelView(projectId),
   };
 }
-
 /// Live board status of the pipeline's own cards (step, blocked, worker
 /// session) for the dashboard's worker-status column and "open session"
 /// links. Kept off /state: list_cards returns every card in the project
@@ -260,22 +265,52 @@ function modelName(id: string): string {
   return words.join(" ") || id;
 }
 
-function pipelineModels(): any {
-  let known: { id: string; display_name: string }[] = [];
+function knownModels(): { id: string; display_name: string }[] {
   try {
-    known = listModels();
+    return listModels();
   } catch (_e) {
-    // models_read unavailable: fall back to names derived from the ids
+    return []; // models_read unavailable: fall back to names derived from the ids
   }
+}
+
+function describeModel(known: { id: string; display_name: string }[], id: string | undefined): { id: string | null; name: string | null; in_catalog: boolean } {
+  if (!id) return { id: null, name: null, in_catalog: false };
+  const hit = known.find((m) => m.id === id);
+  return { id, name: hit?.display_name || modelName(id), in_catalog: !!hit };
+}
+
+function pipelineModels(): any {
+  const known = knownModels();
   const describe = (id: string | undefined, isDefault: boolean) => {
-    if (!id) return { id: null, name: null, is_default: isDefault };
-    const hit = known.find((m) => m.id === id);
-    return { id, name: hit?.display_name || modelName(id), is_default: isDefault };
+    const { in_catalog: _ignored, ...rest } = describeModel(known, id);
+    return { ...rest, is_default: isDefault };
   };
   const writer = modelFor("writer");
   const reviewer = modelFor("reviewer");
   return { writer: describe(writer, writer === DEFAULT_WRITER_MODEL), reviewer: describe(reviewer, !reviewer) };
 }
+
+/// The story's writer models for the Story tab's pickers: its own picks
+/// (`story`), what each writer slot resolves to and from where (story pick /
+/// plugin setting / built-in default / the pilot's model), and what it would
+/// fall back to with this story's pick cleared (the picker's default option).
+function storyModelView(projectId: string): any {
+  const known = knownModels();
+  const story = getStoryModels(projectId);
+  const slot = (s: "pilot" | "chapter") => {
+    const r = resolveWriterModel(s, story);
+    const f = resolveWriterModel(s, { ...story, [s]: undefined });
+    return { ...describeModel(known, r.id), source: r.source, fallback: { ...describeModel(known, f.id), source: f.source } };
+  };
+  const reviewer = modelFor("reviewer");
+  return {
+    story: { pilot: story.pilot ?? null, chapter: story.chapter ?? null },
+    pilot: slot("pilot"),
+    chapter: slot("chapter"),
+    reviewer: describeModel(known, reviewer),
+  };
+}
+
 /// Merge the wizard's partial brief update (only the fields the owner
 /// changed) over the stored brief — see src/wizard.ts for the rules. Once
 /// the pipeline has started, the story's shape (format, chapter count) is

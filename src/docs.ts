@@ -21,6 +21,7 @@ import {
   ReviewDoc,
   RuleSource,
   ruleKey,
+  StoryModels,
   ReviewPass,
   defaultEngineState,
   defaultPipelineState,
@@ -284,6 +285,17 @@ export function getPipelineState(projectId: string): PipelineState {
 
 export function putPipelineState(projectId: string, state: PipelineState): void {
   putDoc("state", projectId, state);
+}
+
+// ── Per-story writer models (one small doc per project) ─────────────────
+
+export function getStoryModels(projectId: string): StoryModels {
+  const value = getDoc("models", projectId) as StoryModels | null;
+  return value && typeof value === "object" ? value : {};
+}
+
+export function putStoryModels(projectId: string, models: StoryModels): void {
+  putDoc("models", projectId, models);
 }
 
 // ── Pipeline cards (one doc per project holding the list) ──────────────────

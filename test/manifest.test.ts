@@ -193,9 +193,9 @@ describe("manifest", () => {
     expect(tool.input_schema.required).toEqual(["chapter", "pass", "verdict", "notes"]);
   });
 
-  it("declares the writer and reviewer model settings, writer defaulting to Opus 5.5", () => {
+  it("declares the writer, chapter-writer and reviewer model settings, writer defaulting to Opus 5.5", () => {
     const keys = manifest.settings.map((s: any) => s.key);
-    expect(keys).toEqual(["writer_model", "reviewer_model"]);
+    expect(keys).toEqual(["writer_model", "chapter_writer_model", "reviewer_model"]);
     for (const field of manifest.settings) {
       // `model` (core >= 0.1.130) renders a searchable picker over /api/models.
       expect(field.type).toBe("model");
@@ -205,6 +205,9 @@ describe("manifest", () => {
     expect(writer.default).toBe("claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333");
     const reviewer = manifest.settings.find((s: any) => s.key === "reviewer_model");
     expect(reviewer.default).toBeUndefined();
+    // Blank chapter writer = follow the pilot writer, so no default.
+    const chapter = manifest.settings.find((s: any) => s.key === "chapter_writer_model");
+    expect(chapter.default).toBeUndefined();
   });
 });
 

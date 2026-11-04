@@ -68,26 +68,36 @@ registry.
 4. Open **Settings -> Plugins** and approve Story Writer's declared hooks
    and permissions — a plugin is inert until approved.
 5. Open any project's board: **⋯** project menu -> **Story**.
-6. Optionally set the `writer_model` / `reviewer_model` settings (model ids
-   in `provider:model[@account]` form) — the pipeline assigns these to the
-   cards it creates.
+6. Optionally set the model settings (below), and pick each story's own
+   pilot and chapter writer in its Story tab.
 
 ## Settings
 
 | Key | Description |
 | --- | --- |
-| `writer_model` | Model assigned to pilot-chapter and chapter-drafting cards. |
-| `reviewer_model` | Model assigned to the structure/character/pacing/line/copyedit review-pass cards. |
+| `writer_model` | Default pilot writer: records, generated story elements, the pilot chapter and its cold-read fix / revision cards — and chapters too unless `chapter_writer_model` is set. Default: Claude Opus 5.5 (`claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333`). |
+| `chapter_writer_model` | Default chapter writer: chapters 2 onward and their cold-read fix / revision cards. Blank = the pilot writer's model. |
+| `reviewer_model` | Model assigned to the review-pass cards and the cold-read (C1) card. Blank = the board's default model. |
 
-Both are `model` fields: Settings -> Plugins shows a searchable picker over the model catalog,
-and an id the catalog doesn't list can still be typed in. Requires PeckBoard 0.1.130 or later —
-older cores fail to parse the manifest.
+All three are `model` fields: Settings -> Plugins shows a searchable picker over the model
+catalog, and an id the catalog doesn't list can still be typed in. Requires PeckBoard 0.1.130 or
+later — older cores fail to parse the manifest.
 
-Both default to Claude Opus 5.5
-(`claude:claude-opus-5-5@acc_00efb018b53b417996c3ec27f7ecc333`) — the owner rejected GPT-5.6 Sol's
-prose. Judge any writer model by a pilot chapter the owner actually plays; switch models when a
-pilot fails rather than adding more rules.
+### Per-story writer models
 
+Each story can override the two writer settings in its Story tab: **Writer models** on the
+dashboard, or *Who writes and reviews* on the setup's Style rules step. A story's model for a card
+is chosen in this order:
+
+- Pilot writer: the story's pick -> `writer_model` -> Claude Opus 5.5.
+- Chapter writer: the story's pick -> `chapter_writer_model` -> the pilot writer's model.
+
+A change applies to cards created afterwards; open cards keep their model until **Recreate
+cards…** replaces them. The pickers list the thinking-capable models PeckBoard offers plugins; any
+other id can be typed in (it's flagged "Not in catalog").
+
+The owner rejected GPT-5.6 Sol's prose. Judge any writer model by a pilot chapter the owner
+actually plays; switch models when a pilot fails rather than adding more rules.
 ## Worker tools
 
 Every tool is project-scoped and `worker_allowed`; inputs are validated

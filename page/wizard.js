@@ -12,6 +12,7 @@
 import { h, clear } from "./dom.js";
 import { postJSON } from "./bridge.js";
 import * as M from "./model.js";
+import { createModelPickers } from "./models.js";
 
 const SAVE_DELAY_MS = 700;
 const RULES = "elements.style_rules";
@@ -104,6 +105,19 @@ export function mountWizard(container, opts) {
   const maxChapters = defaults.max_chapters;
 
   let server = opts.state;
+  // The story's pilot/chapter writer models: saved on their own route, so
+  // they stay editable once the setup is read-only (switch models after a
+  // failed pilot).
+  const modelPicks = createModelPickers({
+    P,
+    fidPrefix: "models",
+    getView: () => server.models,
+    onSaved: (slot) => {
+      const meta = M.WRITER_SLOTS.find((s) => s.slot === slot);
+      notice = { tone: "ok", text: `${meta ? meta.label : "Writer"} saved. It applies to cards created from now on.` };
+      opts.refresh();
+    },
+  });
   let draft = M.clone(server.brief || defaults.brief);
   let hasServerBrief = !!server.brief;
   const dirty = new Set();
@@ -259,12 +273,13 @@ export function mountWizard(container, opts) {
     const prevBrief = server.brief;
     const prevUnits = (server.engine && server.engine.units) || {};
     const prevSnap = generateUnits(server.engine);
+    const prevModels = JSON.stringify(server.models || null);
     server = state;
-    let changed = false;
+    let changed = JSON.stringify(state.models || null) !== prevModels;
     if (state.brief) {
       const owned = new Set([...dirty, ...inflight]);
       const merged = M.mergeServer(draft, state.brief, owned);
-      changed = !M.sameBrief(merged, draft);
+      if (!M.sameBrief(merged, draft)) changed = true;
       draft = merged;
       hasServerBrief = true;
       const fresh = M.newDrafts(prevBrief, state.brief);
@@ -1697,20 +1712,13 @@ export function mountWizard(container, opts) {
     );
   }
 
-  /// Which models the pipeline's cards run on (plugin settings, read-only
-  /// here). The owner's rule: judge a writer by the pilot, and switch
-  /// models when a pilot fails rather than piling on more rules.
+  /// Which models the pipeline's cards run on: the story's pilot and
+  /// chapter writers (picked here, editable even once the setup is
+  /// read-only) and the reviewer (a plugin setting, shown read-only). The
+  /// owner's rule: judge a writer by the pilot, and switch models when a
+  /// pilot fails rather than piling on more rules.
   function modelInfo() {
-    const m = defaults.models || {};
-    const w = m.writer || {};
-    const r = m.reviewer || {};
-    const row = (dt, x, fallback) =>
-      h(
-        "div",
-        null,
-        h("dt", null, dt),
-        h("dd", { title: x.id || null }, x.name || fallback, x.is_default && x.name ? h("span", { class: "sw-badge sw-model-default" }, "Default") : null),
-      );
+    const r = (server.models && server.models.reviewer) || {};
     return h(
       "div",
       { class: "sw-section sw-models" },
@@ -1724,12 +1732,29 @@ export function mountWizard(container, opts) {
           h(
             "p",
             { class: "sw-sub" },
-            "Rules can't rescue a weak writer. Judge the writer model by the pilot chapter you read; if a pilot fails, switch the model in the plugin's settings rather than adding more rules.",
+            "Rules can't rescue a weak writer. Judge the writer model by the pilot chapter you read; if a pilot fails, switch the model here rather than adding more rules. A change applies to cards created from then on.",
           ),
         ),
       ),
-      h("dl", { class: "sw-summary sw-models-list" }, row("Writer model", w, "—"), row("Reviewer model · cold reader", r, "The board's default model")),
+      modelPicks.build(),
+      h(
+        "dl",
+        { class: "sw-summary sw-models-list" },
+        h(
+          "div",
+          null,
+          h("dt", null, "Reviewer model · cold reader"),
+          h("dd", { title: r.id || null }, r.name || "The board's default model", h("span", { class: "sw-muted sw-model-where" }, "Set in the plugin's settings")),
+        ),
+      ),
     );
+  }
+
+  /// A writer slot's model name for the review summary (where it comes
+  /// from is shown beside the pickers on the Style rules step).
+  function modelLine(slot) {
+    const v = (server.models && server.models[slot]) || {};
+    return v.name || v.id || "The board's default model";
   }
 
   function styleEditor(show, disabled, modeBlock, generating) {
@@ -2018,11 +2043,9 @@ export function mountWizard(container, opts) {
           item("Tense", b.tense),
           item("Tone", b.tone),
           item("Audience · rating", [b.audience, b.rating].filter(Boolean).join(" · ")),
-          item("Writer model", defaults.models && defaults.models.writer ? `${defaults.models.writer.name}${defaults.models.writer.is_default ? " (default)" : ""}` : ""),
-          item(
-            "Reviewer model",
-            defaults.models && defaults.models.reviewer && defaults.models.reviewer.name ? defaults.models.reviewer.name : "The board's default model",
-          ),
+          item("Pilot writer", modelLine("pilot")),
+          item("Chapter writer", modelLine("chapter")),
+          item("Reviewer model", server.models && server.models.reviewer && server.models.reviewer.name ? server.models.reviewer.name : "The board's default model"),
         ),
         readOnly
           ? null
@@ -2181,6 +2204,7 @@ export function mountWizard(container, opts) {
       if (readOnly && dirty.size && !saving) {
         postJSON(`${P}/wizard`, { brief: M.buildPatch(draft, Array.from(dirty), rulesBase) }).catch(() => {});
       }
+      modelPicks.destroy();
       destroyed = true;
       clearTimeout(saveTimer);
       document.removeEventListener("visibilitychange", onHide);

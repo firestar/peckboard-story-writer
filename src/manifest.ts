@@ -86,6 +86,7 @@ export function manifestJson(): string {
       "POST /api/plugin-ui/story-writer/pipeline/feedback",
       "POST /api/plugin-ui/story-writer/pipeline/retry",
       "POST /api/plugin-ui/story-writer/pipeline/recreate",
+      "POST /api/plugin-ui/story-writer/models/story",
       "GET /api/plugin-ui/story-writer/export",
       "GET /api/plugin-ui/story-writer/cards",
       "GET /api/plugin-ui/story-writer/chapter",
@@ -100,15 +101,26 @@ export function manifestJson(): string {
         key: "writer_model",
         title: "Writer model",
         description:
-          "Model id (provider:model[@account]) the pipeline assigns to pilot-chapter and " +
-          "chapter-drafting cards and their cold-read fix cards. Default: Claude Opus 5.5 — " +
-          "the owner rejected GPT-5.6 Sol's prose on a pilot read; judge any writer model by " +
-          "a pilot chapter the owner plays, and switch models when a pilot fails, rather than " +
-          "adding more rules.",
-        required: false,
+          "Default pilot writer: the model (provider:model[@account]) for records, generated " +
+          "story elements, the pilot chapter and its cold-read fix / revision cards — and for " +
+          "chapters too unless Chapter writer model is set. A story can override it in its " +
+          "Story tab. Default: Claude Opus 5.5 — the owner rejected GPT-5.6 Sol's prose on a " +
+          "pilot read; judge any writer model by a pilot chapter the owner plays, and switch " +
+          "models when a pilot fails, rather than adding more rules.",
         type: "model",
         default: DEFAULT_WRITER_MODEL,
         placeholder: DEFAULT_WRITER_MODEL,
+      },
+      {
+        key: "chapter_writer_model",
+        title: "Chapter writer model",
+        description:
+          "Default chapter writer: the model for chapters 2 onward and their cold-read fix / " +
+          "revision cards. Leave blank to use the pilot writer's model. A story can override " +
+          "it in its Story tab.",
+        required: false,
+        type: "model",
+        placeholder: "Same as the writer model",
       },
       {
         key: "reviewer_model",

@@ -608,3 +608,35 @@ export function newDrafts(before, after) {
   const next = (after && after.status) || {};
   return ELEMENT_KEYS.filter((k) => next[k] === "ai_draft" && prev[k] !== "ai_draft");
 }
+
+// ── Writer model pickers ───────────────────────────────────────────────────
+
+/// The two writer slots a story can pick a model for (src/pipeline.ts
+/// writerSlot): which cards each one writes.
+export const WRITER_SLOTS = [
+  { slot: "pilot", label: "Pilot writer", help: "Records, AI-generated story elements, and the pilot chapter with its cold-read fixes and revisions." },
+  { slot: "chapter", label: "Chapter writer", help: "Chapters 2 onward, with their cold-read fixes and revisions." },
+];
+
+/// Where a slot's model comes from (state.models[slot].source).
+export const MODEL_SOURCES = {
+  story: "Picked for this story",
+  setting: "Plugin setting",
+  default: "Built-in default",
+  pilot: "Same as the pilot writer",
+};
+
+/// Catalog models matching a search: every whitespace-separated term must
+/// appear in the display name or the id (case-insensitive). Catalog order is
+/// kept; at most `limit` come back.
+export function filterModels(models, query, limit = 60) {
+  const list = Array.isArray(models) ? models.filter((m) => m && typeof m.id === "string") : [];
+  const terms = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const hits = terms.length
+    ? list.filter((m) => {
+        const hay = `${m.display_name || ""} ${m.id}`.toLowerCase();
+        return terms.every((t) => hay.includes(t));
+      })
+    : list;
+  return hits.slice(0, limit);
+}

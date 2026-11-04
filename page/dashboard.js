@@ -14,6 +14,8 @@
 import { h, clear } from "./dom.js";
 import { getJSON, postJSON, openSession } from "./bridge.js";
 import * as D from "./dash-model.js";
+import * as M from "./model.js";
+import { createModelPickers } from "./models.js";
 
 const CARDS_POLL_MS = 20000;
 const CARDS_SOON_MS = 800;
@@ -209,6 +211,7 @@ export function mountDashboard(container, opts) {
   let notice = null; // {tone, text}
   let confirming = false; // the Approve confirmation is showing
   let recreateAsk = false; // the "Recreate cards" confirmation is showing
+  let modelsOpen = false; // the "Writer models" panel is showing
   const busy = new Set(); // "approve", "export", "retry:<id>", "recreate", "note", "note:<id>", "decide:<n>"
   // Owner review (SW-12): the note popover over a passage, the note being
   // edited, and the open "Request changes" form.
@@ -222,6 +225,20 @@ export function mountDashboard(container, opts) {
   let drawerKey = null; // chapter:tab the drawer body's scroll belongs to
   const texts = new Map(); // chapter -> {revision, doc?, loading?, error?}
   let focusFid = null;
+  // The story's pilot/chapter writer models (switch after a failed pilot).
+  const modelPicks = createModelPickers({
+    P,
+    fidPrefix: "models",
+    getView: () => state.models,
+    onSaved: (slot) => {
+      const meta = M.WRITER_SLOTS.find((s) => s.slot === slot);
+      say({
+        tone: "ok",
+        text: `${meta ? meta.label : "Writer"} saved. It applies to new cards; use Recreate cards… to switch open ones.`,
+      });
+      opts.refresh();
+    },
+  });
 
   const tip = h("div", { class: "sw-tip", role: "tooltip", hidden: true });
   document.body.appendChild(tip);
@@ -610,6 +627,7 @@ export function mountDashboard(container, opts) {
       { class: "sw-dash" },
       buildHeader(),
       notice ? buildNotice() : null,
+      modelsOpen ? buildModels() : null,
       recreateAsk ? buildRecreateAsk() : null,
       buildGate(),
       buildProblems(),
@@ -770,8 +788,65 @@ export function mountDashboard(container, opts) {
         exporting ? h("span", { class: "sw-spinner" }) : icon("download"),
         "Export",
       ),
+      modelsBtn(),
       recreateBtn(),
       h("button", { class: "sw-btn secondary", type: "button", dataset: { fid: "setup" }, onclick: opts.onShowSetup }, "View setup"),
+    );
+  }
+
+  /// Header button: show/hide the story's writer model pickers.
+  function modelsBtn() {
+    return h(
+      "button",
+      {
+        class: `sw-btn secondary${modelsOpen ? " on" : ""}`,
+        type: "button",
+        "aria-expanded": modelsOpen ? "true" : "false",
+        "aria-controls": "sw-models-panel",
+        title: "Pick which models write this story's pilot and chapters",
+        dataset: { fid: "models.toggle" },
+        onclick: () => {
+          modelsOpen = !modelsOpen;
+          focusFid = modelsOpen ? "models.pilot" : "models.toggle";
+          render();
+        },
+      },
+      icon("user"),
+      "Writer models",
+    );
+  }
+
+  function buildModels() {
+    return h(
+      "section",
+      { class: "sw-panel sw-models-panel", id: "sw-models-panel", "aria-labelledby": "sw-models-title" },
+      h(
+        "div",
+        { class: "sw-section-head" },
+        h(
+          "div",
+          { style: { flex: "1" } },
+          h("h3", { id: "sw-models-title" }, "Writer models"),
+          h(
+            "p",
+            { class: "sw-sub" },
+            "Which models write this story. A change applies to cards created from now on; use Recreate cards… to switch open cards too. Judge a writer by the pilot you read — if a pilot fails, switch the model rather than adding more rules.",
+          ),
+        ),
+        h("button", {
+          class: "sw-icon-btn",
+          type: "button",
+          "aria-label": "Close writer models",
+          html: ICON.x,
+          dataset: { fid: "models.close" },
+          onclick: () => {
+            modelsOpen = false;
+            focusFid = "models.toggle";
+            render();
+          },
+        }),
+      ),
+      modelPicks.build(),
     );
   }
 
@@ -3394,6 +3469,7 @@ export function mountDashboard(container, opts) {
       container.removeEventListener("focusin", onOver);
       container.removeEventListener("mouseleave", hideTip);
       container.removeEventListener("focusout", hideTip);
+      modelPicks.destroy();
       document.documentElement.classList.remove("sw-noscroll");
       tip.remove();
     },
